@@ -154,6 +154,13 @@ python tools\string_replacer.py "C:\Program Files\RenderDoc\renderdoc.dll"
 
 ## 🔧 故障排除
 
+### 问题: 从 Git 拉取后编译报错
+
+**解决方案**: 请查看 [编译故障排除文档](docs/BUILD_TROUBLESHOOTING.md)，涵盖：
+- 缺少 `wymsrv.dll` / `symsrv.dll` / `dbghelp.dll` 的解决方法
+- SWIG、Qt 自定义生成失败（退出码 9009、3）的解决方法
+- 前置环境与依赖说明
+
 ### 问题: 注入失败
 
 **解决方案**:

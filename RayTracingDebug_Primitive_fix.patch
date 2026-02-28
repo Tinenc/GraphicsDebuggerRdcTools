@@ -1,0 +1,32 @@
+--- a/Engine/Source/Runtime/Renderer/Private/RayTracing/RayTracingDebug.cpp
++++ b/Engine/Source/Runtime/Renderer/Private/RayTracing/RayTracingDebug.cpp
+@@ -20,6 +20,7 @@
+ #include "Nanite/NaniteRayTracing.h"
+ #include "PixelShaderUtils.h"
++#include "PrimitiveUniformShaderParameters.h"
+ #include "SystemTextures.h"
+ 
+ #define LOCTEXT_NAMESPACE "RayTracingDebugVisualizationMenuCommands"
+@@ -302,6 +303,7 @@ class FRayTracingDebugHitStatsCHS : public FGlobalShader
+ 	BEGIN_SHADER_PARAMETER_STRUCT(FParameters, )
+ 		SHADER_PARAMETER_STRUCT_REF(FSceneUniformParameters, Scene)
++		SHADER_PARAMETER_STRUCT_REF(FPrimitiveUniformShaderParameters, Primitive)
+ 		SHADER_PARAMETER_RDG_UNIFORM_BUFFER(FRayTracingDebugHitStatsUniformBufferParameters, RayTracingDebugHitStatsUniformBuffer)
+ 	END_SHADER_PARAMETER_STRUCT()
+ public:
+@@ -634,6 +636,13 @@ void BindRayTracingDebugHitStatsCHSMaterialBindings(FRHICommandList& RHICmdList, F
+ 		if (NaniteUniformBufferParameter.IsBound())
+ 		{
+ 			check(NaniteUniformBufferParameter.GetBaseIndex() < Binding.NumUniformBuffers);
+ 			Binding.UniformBufferArray[NaniteUniformBufferParameter.GetBaseIndex()] = Nanite::GRayTracingManager.GetUniformBuffer().GetReference();
+ 		}
++
++		const auto& PrimitiveUniformBufferParameter = Shader->GetUniformBufferParameter<FPrimitiveUniformShaderParameters>();
++		if (PrimitiveUniformBufferParameter.IsBound())
++		{
++			check(PrimitiveUniformBufferParameter.GetBaseIndex() < Binding.NumUniformBuffers);
++			Binding.UniformBufferArray[PrimitiveUniformBufferParameter.GetBaseIndex()] = GIdentityPrimitiveUniformBuffer.GetUniformBufferRHI();
++		}
+ 
+ 		return Binding;
+ 	};
