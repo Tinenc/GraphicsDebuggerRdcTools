@@ -48,3 +48,11 @@ qrenderdoc/3rdparty/pyside
 .DS_Store
 plugins-*/
 __pycache__
+
+# 以下为构建依赖例外：允许提交 dbghelp/SWIG/Qt 等 3rdparty 二进制，便于克隆后直接编译
+!renderdoc/3rdparty/dbghelp/**/*.dll
+!renderdoc/3rdparty/dbghelp/**/*.yes
+!qrenderdoc/3rdparty/swig/swig.exe
+!qrenderdoc/3rdparty/qt/**/bin/*.exe
+!qrenderdoc/3rdparty/qt/**/bin/*.dll
+!qrenderdoc/3rdparty/pyside/**
