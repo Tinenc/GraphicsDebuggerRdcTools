@@ -249,8 +249,472 @@ extern "C" __declspec(dllexport) void __cdecl INTERNAL_ApplyEnvMods(void *ignore
   Process::ApplyEnvironmentModification();
 }
 
+// ===========================================================================
+// TinecmaTool: SetThreadContext-based DLL injection (CrashSight / anti-cheat
+// bypass). Instead of CreateRemoteThread(LoadLibraryW, dllPath) -- which is a
+// well-known IOC that user-mode anti-cheats such as CrashSight hook -- we:
+//   1. enumerate one running thread of the target process,
+//   2. SuspendThread + GetThreadContext to snapshot its CPU state,
+//   3. allocate a shellcode page in the remote process that:
+//        - saves volatile regs / flags,
+//        - calls LoadLibraryW(remotePath) (or any (void*)data export),
+//        - (function-call variant) writes 1 to a done-flag byte,
+//        - restores regs and `ret`s to the original RIP/EIP,
+//   4. SetThreadContext to point RIP at the shellcode,
+//   5. ResumeThread; the target's own thread now performs the load, so no new
+//      remote thread is ever created and the call stack of LoadLibrary is the
+//      victim thread, not a fresh worker.
+// Set TINECMATOOL_USE_THREADHIJACK_INJECT to 0 to fall back to the legacy
+// CreateRemoteThread path.
+// ===========================================================================
+
+#ifndef TINECMATOOL_USE_THREADHIJACK_INJECT
+#define TINECMATOOL_USE_THREADHIJACK_INJECT 1
+#endif
+
+namespace
+{
+// total ms to wait for either DLL appearance (InjectDLL) or done-flag toggle
+// (InjectFunctionCall) before giving up
+static const DWORD kHijackTimeoutMs = 10000;
+static const DWORD kHijackPollMs = 25;
+
+inline void sc_push8(rdcarray<uint8_t> &sc, uint8_t b)
+{
+  sc.push_back(b);
+}
+inline void sc_push32(rdcarray<uint8_t> &sc, uint32_t v)
+{
+  sc.push_back((uint8_t)(v & 0xFF));
+  sc.push_back((uint8_t)((v >> 8) & 0xFF));
+  sc.push_back((uint8_t)((v >> 16) & 0xFF));
+  sc.push_back((uint8_t)((v >> 24) & 0xFF));
+}
+inline void sc_push64(rdcarray<uint8_t> &sc, uint64_t v)
+{
+  sc_push32(sc, (uint32_t)v);
+  sc_push32(sc, (uint32_t)(v >> 32));
+}
+
+// Build shellcode for a "call (paramReg)=arg, then ret to origRip" trampoline.
+// If doneFlagAddr != 0, the shellcode also stores 1 to that byte just before
+// returning (used by InjectFunctionCall_ThreadHijack to signal completion).
+#if defined(_M_X64) || defined(__x86_64__)
+static rdcarray<uint8_t> BuildHijackShellcode(uintptr_t arg, uintptr_t funcAddr,
+                                           uintptr_t doneFlagAddr, uintptr_t origRip)
+{
+  rdcarray<uint8_t> sc;
+  sc.reserve(96);
+
+  sc_push8(sc, 0x9C);    // pushfq
+  sc_push8(sc, 0x50);    // push rax
+  sc_push8(sc, 0x51);    // push rcx
+  sc_push8(sc, 0x52);    // push rdx
+  sc_push8(sc, 0x41);
+  sc_push8(sc, 0x50);    // push r8
+  sc_push8(sc, 0x41);
+  sc_push8(sc, 0x51);    // push r9
+  sc_push8(sc, 0x41);
+  sc_push8(sc, 0x52);    // push r10
+  sc_push8(sc, 0x41);
+  sc_push8(sc, 0x53);    // push r11
+
+  // sub rsp, 0x28      ; shadow space (32 bytes) + keep 16-byte alignment after the 7x push above
+  sc_push8(sc, 0x48);
+  sc_push8(sc, 0x83);
+  sc_push8(sc, 0xEC);
+  sc_push8(sc, 0x28);
+
+  // mov rcx, <arg>
+  sc_push8(sc, 0x48);
+  sc_push8(sc, 0xB9);
+  sc_push64(sc, (uint64_t)arg);
+
+  // mov rax, <funcAddr>
+  sc_push8(sc, 0x48);
+  sc_push8(sc, 0xB8);
+  sc_push64(sc, (uint64_t)funcAddr);
+
+  // call rax
+  sc_push8(sc, 0xFF);
+  sc_push8(sc, 0xD0);
+
+  // add rsp, 0x28
+  sc_push8(sc, 0x48);
+  sc_push8(sc, 0x83);
+  sc_push8(sc, 0xC4);
+  sc_push8(sc, 0x28);
+
+  if(doneFlagAddr)
+  {
+    // mov rax, doneFlagAddr ; mov byte [rax], 1
+    sc_push8(sc, 0x48);
+    sc_push8(sc, 0xB8);
+    sc_push64(sc, (uint64_t)doneFlagAddr);
+    sc_push8(sc, 0xC6);
+    sc_push8(sc, 0x00);
+    sc_push8(sc, 0x01);
+  }
+
+  sc_push8(sc, 0x41);
+  sc_push8(sc, 0x5B);    // pop r11
+  sc_push8(sc, 0x41);
+  sc_push8(sc, 0x5A);    // pop r10
+  sc_push8(sc, 0x41);
+  sc_push8(sc, 0x59);    // pop r9
+  sc_push8(sc, 0x41);
+  sc_push8(sc, 0x58);    // pop r8
+  sc_push8(sc, 0x5A);    // pop rdx
+  sc_push8(sc, 0x59);    // pop rcx
+  sc_push8(sc, 0x58);    // pop rax
+  sc_push8(sc, 0x9D);    // popfq
+
+  // push originalRip (low32, sign-extends to 64-bit zero high)
+  sc_push8(sc, 0x68);
+  sc_push32(sc, (uint32_t)origRip);
+  // mov dword [rsp+4], originalRip high32 -- fix the high 32 bits
+  sc_push8(sc, 0xC7);
+  sc_push8(sc, 0x44);
+  sc_push8(sc, 0x24);
+  sc_push8(sc, 0x04);
+  sc_push32(sc, (uint32_t)(origRip >> 32));
+  // ret
+  sc_push8(sc, 0xC3);
+
+  return sc;
+}
+#else
+static rdcarray<uint8_t> BuildHijackShellcode(uintptr_t arg, uintptr_t funcAddr,
+                                           uintptr_t doneFlagAddr, uintptr_t origEip)
+{
+  rdcarray<uint8_t> sc;
+  sc.reserve(48);
+
+  sc_push8(sc, 0x9C);    // pushfd
+  sc_push8(sc, 0x60);    // pushad
+  // push <arg>
+  sc_push8(sc, 0x68);
+  sc_push32(sc, (uint32_t)arg);
+  // mov eax, funcAddr
+  sc_push8(sc, 0xB8);
+  sc_push32(sc, (uint32_t)funcAddr);
+  // call eax  ; stdcall, callee cleans up the single push above
+  sc_push8(sc, 0xFF);
+  sc_push8(sc, 0xD0);
+
+  if(doneFlagAddr)
+  {
+    // mov byte [doneFlagAddr], 1  ; uses absolute address (no SIB)
+    sc_push8(sc, 0xC6);
+    sc_push8(sc, 0x05);
+    sc_push32(sc, (uint32_t)doneFlagAddr);
+    sc_push8(sc, 0x01);
+  }
+
+  sc_push8(sc, 0x61);    // popad
+  sc_push8(sc, 0x9D);    // popfd
+  // push originalEip
+  sc_push8(sc, 0x68);
+  sc_push32(sc, (uint32_t)origEip);
+  // ret
+  sc_push8(sc, 0xC3);
+
+  return sc;
+}
+#endif
+
+// Open one suitable thread of `pid`. Prefer a thread that's already suspended
+// (e.g. main thread of a CREATE_SUSPENDED process); otherwise the first
+// enumerable one. Caller owns the returned handle.
+static HANDLE OpenInjectionThread(DWORD pid)
+{
+  HANDLE snap = CreateToolhelp32Snapshot(TH32CS_SNAPTHREAD, 0);
+  if(snap == INVALID_HANDLE_VALUE)
+    return NULL;
+
+  HANDLE picked = NULL;
+
+  THREADENTRY32 te = {};
+  te.dwSize = sizeof(te);
+  if(Thread32First(snap, &te))
+  {
+    do
+    {
+      if(te.th32OwnerProcessID != pid)
+        continue;
+
+      HANDLE h = OpenThread(THREAD_GET_CONTEXT | THREAD_SET_CONTEXT |
+                                THREAD_SUSPEND_RESUME | THREAD_QUERY_INFORMATION,
+                            FALSE, te.th32ThreadID);
+      if(!h)
+        continue;
+
+      if(!picked)
+      {
+        picked = h;
+      }
+      else
+      {
+        CloseHandle(h);
+      }
+    } while(Thread32Next(snap, &te));
+  }
+
+  CloseHandle(snap);
+  return picked;
+}
+
+// Read a single byte from remote process memory. Returns false on read error.
+static bool RemoteReadByte(HANDLE hProcess, void *addr, uint8_t &out)
+{
+  SIZE_T n = 0;
+  return ReadProcessMemory(hProcess, addr, &out, 1, &n) && n == 1;
+}
+
+// Core thread-hijack routine. funcAddr is invoked with a single pointer arg
+// (matches the ABI of both LoadLibraryW and INTERNAL_* exports in this fork).
+// If `dataOut`/`dataLen` is provided the data is read back from `argRemote`
+// after completion.
+static bool ThreadHijackInvoke(HANDLE hProcess, DWORD pid, uintptr_t funcAddr,
+                               void *argRemote, void *dataOut, size_t dataLen,
+                               const char *debugTag)
+{
+  if(!pid)
+    pid = GetProcessId(hProcess);
+  if(!pid)
+  {
+    RDCERR("ThreadHijackInvoke(%s): no PID for process handle", debugTag);
+    return false;
+  }
+
+  HANDLE hThread = OpenInjectionThread(pid);
+  if(!hThread)
+  {
+    RDCERR("ThreadHijackInvoke(%s): no openable thread in PID %u (err %u)", debugTag, pid,
+           GetLastError());
+    return false;
+  }
+
+  DWORD prevSusp = SuspendThread(hThread);
+  if(prevSusp == (DWORD)-1)
+  {
+    RDCERR("ThreadHijackInvoke(%s): SuspendThread failed (err %u)", debugTag, GetLastError());
+    CloseHandle(hThread);
+    return false;
+  }
+
+  CONTEXT ctx = {};
+  ctx.ContextFlags = CONTEXT_FULL;
+  if(!GetThreadContext(hThread, &ctx))
+  {
+    RDCERR("ThreadHijackInvoke(%s): GetThreadContext failed (err %u)", debugTag, GetLastError());
+    ResumeThread(hThread);
+    CloseHandle(hThread);
+    return false;
+  }
+
+  uintptr_t origRip = 0;
+#if defined(_M_X64) || defined(__x86_64__)
+  origRip = (uintptr_t)ctx.Rip;
+#else
+  origRip = (uintptr_t)ctx.Eip;
+#endif
+
+  // Allocate a done-flag byte iff caller wants completion notification.
+  void *doneFlag = NULL;
+  if(dataOut)
+  {
+    doneFlag = VirtualAllocEx(hProcess, NULL, 16, MEM_COMMIT | MEM_RESERVE, PAGE_READWRITE);
+    if(!doneFlag)
+    {
+      RDCERR("ThreadHijackInvoke(%s): VirtualAllocEx(doneFlag) failed (err %u)", debugTag,
+             GetLastError());
+      ResumeThread(hThread);
+      CloseHandle(hThread);
+      return false;
+    }
+    uint8_t zero = 0;
+    SIZE_T n = 0;
+    WriteProcessMemory(hProcess, doneFlag, &zero, 1, &n);
+  }
+
+  rdcarray<uint8_t> shellcode =
+      BuildHijackShellcode((uintptr_t)argRemote, funcAddr, (uintptr_t)doneFlag, origRip);
+
+  void *remoteCode = VirtualAllocEx(hProcess, NULL, shellcode.size(), MEM_COMMIT | MEM_RESERVE,
+                                    PAGE_EXECUTE_READWRITE);
+  if(!remoteCode)
+  {
+    RDCERR("ThreadHijackInvoke(%s): VirtualAllocEx(shellcode) failed (err %u)", debugTag,
+           GetLastError());
+    if(doneFlag)
+      VirtualFreeEx(hProcess, doneFlag, 0, MEM_RELEASE);
+    ResumeThread(hThread);
+    CloseHandle(hThread);
+    return false;
+  }
+
+  SIZE_T written = 0;
+  if(!WriteProcessMemory(hProcess, remoteCode, shellcode.data(), shellcode.size(), &written) ||
+     written != shellcode.size())
+  {
+    RDCERR("ThreadHijackInvoke(%s): WriteProcessMemory(shellcode) failed (err %u)", debugTag,
+           GetLastError());
+    VirtualFreeEx(hProcess, remoteCode, 0, MEM_RELEASE);
+    if(doneFlag)
+      VirtualFreeEx(hProcess, doneFlag, 0, MEM_RELEASE);
+    ResumeThread(hThread);
+    CloseHandle(hThread);
+    return false;
+  }
+
+#if defined(_M_X64) || defined(__x86_64__)
+  ctx.Rip = (DWORD64)(uintptr_t)remoteCode;
+#else
+  ctx.Eip = (DWORD)(uintptr_t)remoteCode;
+#endif
+
+  if(!SetThreadContext(hThread, &ctx))
+  {
+    RDCERR("ThreadHijackInvoke(%s): SetThreadContext failed (err %u)", debugTag, GetLastError());
+    VirtualFreeEx(hProcess, remoteCode, 0, MEM_RELEASE);
+    if(doneFlag)
+      VirtualFreeEx(hProcess, doneFlag, 0, MEM_RELEASE);
+    ResumeThread(hThread);
+    CloseHandle(hThread);
+    return false;
+  }
+
+  // Resume to whatever suspend count we found + 1 (we added one with our SuspendThread).
+  for(DWORD i = 0; i <= prevSusp; i++)
+    ResumeThread(hThread);
+
+  bool ok = true;
+
+  if(doneFlag)
+  {
+    // Poll the done-flag byte (1-byte stores are atomic on x86/x64).
+    ok = false;
+    for(DWORD waited = 0; waited < kHijackTimeoutMs; waited += kHijackPollMs)
+    {
+      uint8_t b = 0;
+      if(RemoteReadByte(hProcess, doneFlag, b) && b)
+      {
+        ok = true;
+        break;
+      }
+      Sleep(kHijackPollMs);
+    }
+
+    if(!ok)
+      RDCERR("ThreadHijackInvoke(%s): timed out waiting for done-flag", debugTag);
+
+    if(ok && dataOut && dataLen)
+    {
+      SIZE_T n = 0;
+      ReadProcessMemory(hProcess, argRemote, dataOut, dataLen, &n);
+    }
+  }
+  else
+  {
+    // No done-flag: at least give the shellcode a few ms to execute before
+    // freeing the remote code page. Callers (e.g. InjectDLL) verify success
+    // out-of-band via FindRemoteDLL.
+    Sleep(50);
+  }
+
+  VirtualFreeEx(hProcess, remoteCode, 0, MEM_RELEASE);
+  if(doneFlag)
+    VirtualFreeEx(hProcess, doneFlag, 0, MEM_RELEASE);
+  CloseHandle(hThread);
+  return ok;
+}
+
+static bool InjectDLL_ThreadHijack(HANDLE hProcess, DWORD pid, rdcwstr libName)
+{
+  HMODULE kernel32 = GetModuleHandleA("kernel32.dll");
+  if(!kernel32)
+  {
+    RDCERR("InjectDLL_ThreadHijack: couldn't get kernel32 handle");
+    return false;
+  }
+  uintptr_t loadLib = (uintptr_t)GetProcAddress(kernel32, "LoadLibraryW");
+  if(!loadLib)
+  {
+    RDCERR("InjectDLL_ThreadHijack: couldn't resolve LoadLibraryW");
+    return false;
+  }
+
+  wchar_t dllPath[MAX_PATH + 1] = {0};
+  wcscpy_s(dllPath, libName.c_str());
+
+  void *remoteDllPath = VirtualAllocEx(hProcess, NULL, sizeof(dllPath), MEM_COMMIT | MEM_RESERVE,
+                                       PAGE_READWRITE);
+  if(!remoteDllPath)
+  {
+    RDCERR("InjectDLL_ThreadHijack: VirtualAllocEx for dllPath failed (err %u)", GetLastError());
+    return false;
+  }
+
+  SIZE_T n = 0;
+  if(!WriteProcessMemory(hProcess, remoteDllPath, dllPath, sizeof(dllPath), &n))
+  {
+    RDCERR("InjectDLL_ThreadHijack: WriteProcessMemory for dllPath failed (err %u)", GetLastError());
+    VirtualFreeEx(hProcess, remoteDllPath, 0, MEM_RELEASE);
+    return false;
+  }
+
+  // No done-flag: InjectDLL's success is verified externally via FindRemoteDLL.
+  bool ok = ThreadHijackInvoke(hProcess, pid, loadLib, remoteDllPath, NULL, 0, "LoadLibraryW");
+
+  VirtualFreeEx(hProcess, remoteDllPath, 0, MEM_RELEASE);
+  return ok;
+}
+
+static bool InjectFunctionCall_ThreadHijack(HANDLE hProcess, DWORD pid, uintptr_t funcAddr,
+                                            void *data, size_t dataLen, const char *debugTag)
+{
+  if(dataLen == 0)
+  {
+    RDCERR("InjectFunctionCall_ThreadHijack(%s): invalid empty payload", debugTag);
+    return false;
+  }
+
+  void *remoteData =
+      VirtualAllocEx(hProcess, NULL, dataLen, MEM_COMMIT | MEM_RESERVE, PAGE_READWRITE);
+  if(!remoteData)
+  {
+    RDCERR("InjectFunctionCall_ThreadHijack(%s): VirtualAllocEx failed (err %u)", debugTag,
+           GetLastError());
+    return false;
+  }
+
+  SIZE_T n = 0;
+  if(!WriteProcessMemory(hProcess, remoteData, data, dataLen, &n))
+  {
+    RDCERR("InjectFunctionCall_ThreadHijack(%s): WriteProcessMemory failed (err %u)", debugTag,
+           GetLastError());
+    VirtualFreeEx(hProcess, remoteData, 0, MEM_RELEASE);
+    return false;
+  }
+
+  bool ok = ThreadHijackInvoke(hProcess, pid, funcAddr, remoteData, data, dataLen, debugTag);
+
+  VirtualFreeEx(hProcess, remoteData, 0, MEM_RELEASE);
+  return ok;
+}
+
+}    // anonymous namespace
+
 void InjectDLL(HANDLE hProcess, rdcwstr libName)
 {
+#if TINECMATOOL_USE_THREADHIJACK_INJECT
+  if(InjectDLL_ThreadHijack(hProcess, GetProcessId(hProcess), libName))
+    return;
+  RDCWARN("Thread-hijack DLL inject failed; falling back to CreateRemoteThread for '%ls'",
+          libName.c_str());
+#endif
+
   wchar_t dllPath[MAX_PATH + 1] = {0};
   wcscpy_s(dllPath, libName.c_str());
 
@@ -417,6 +881,13 @@ void InjectFunctionCall(HANDLE hProcess, uintptr_t renderdoc_remote, const char 
   // so get the function
   // in the remote module (which might be loaded at a different base address
   uintptr_t func_remote = func_local + renderdoc_remote - (uintptr_t)renderdoc_local;
+
+#if TINECMATOOL_USE_THREADHIJACK_INJECT
+  if(InjectFunctionCall_ThreadHijack(hProcess, GetProcessId(hProcess), func_remote, data, dataLen,
+                                     funcName))
+    return;
+  RDCWARN("Thread-hijack call inject failed for %s; falling back to CreateRemoteThread", funcName);
+#endif
 
   void *remoteMem = VirtualAllocEx(hProcess, NULL, dataLen, MEM_COMMIT, PAGE_EXECUTE_READWRITE);
   SIZE_T numWritten;

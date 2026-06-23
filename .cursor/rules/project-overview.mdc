@@ -6,7 +6,10 @@ alwaysApply: true
 # 项目背景
 
 - **上游 fork**: https://github.com/butteruni/renderdoc.git，`Endfield` 分支（基于 baldurk/renderdoc v1.x）
-- **本仓库远程**: https://github.com/Tinenc/GraphicsDebuggerRdcTools.git，活动分支 `endfield/import`
+- **本仓库远程**: https://github.com/Tinenc/GraphicsDebuggerRdcTools.git
+- **分支布局**:
+  - `endfield/import` —— 品牌统一基线（rendertest/gfxdiag → `TinecmaTool`），其它逻辑等同上游 butteruni/renderdoc Endfield
+  - `tinecmatool/threadctx-inject` —— 在基线之上把 `CreateRemoteThread` 注入换成 `SetThreadContext` 线程劫持（绕过 CrashSight）；编译宏 `TINECMATOOL_USE_THREADHIJACK_INJECT`（默认 1）控制，失败自动 fallback 到旧路径。详见 [`TINECMATOOL_THREADCTX_INJECT.md`](../../TINECMATOOL_THREADCTX_INJECT.md)
 - **本地路径**: `c:\Program Files\GraphicsDebuggerRdcTools`（路径含空格，PowerShell 中需用双引号 `"c:\Program Files\..."`）
 - **解决方案**: `renderdoc.sln`
 - **Endfield 用途**: 修改 RenderDoc hook 逻辑，避免注入到 `platformprocess.exe`（鸣潮 Wuwa 启动器）等进程，便于对该类游戏抓帧
@@ -80,4 +83,5 @@ alwaysApply: true
 - 修改 hook 注入逻辑时优先看 `sys_win32_hooks.cpp` 的 `ShouldInject` 与 `win32_process.cpp` 的 `Inject*` 函数
 - PowerShell 命令所有含空格路径必须双引号；分隔命令用 `;` 而不是 `&&`
 - 新增任何文件名/符号名/字符串/资源时，沿用上面的 TinecmaTool 命名 + 大小写规则，**绝不再引入 `renderdoc` / `rendertest` / `gfxdiag` / `RTCAP` / `GFXDIAG` 等历史品牌**
-- 详细的 fork 演化历史与对比，见 `ENDFIELD_CHANGES.md`
+- 详细的 fork 演化历史与对比，见 `ENDFIELD_CHANGES.md`、品牌统一细节见 `BRANDING_TINECMATOOL.md`、线程劫持注入见 `TINECMATOOL_THREADCTX_INJECT.md`
+- **新增注入相关代码** 时优先在 `win32_process.cpp` 顶部 `ThreadHijackInvoke` / `BuildHijackShellcode` 上扩展，避免再引入 `CreateRemoteThread`
