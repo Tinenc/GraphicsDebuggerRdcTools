@@ -272,6 +272,33 @@ extern "C" __declspec(dllexport) void __cdecl INTERNAL_ApplyEnvMods(void *ignore
 #define TINECMATOOL_USE_THREADHIJACK_INJECT 1
 #endif
 
+// ===========================================================================
+// TinecmaTool: manual-mapped DLL injection (ACE-Base / unsigned-DLL bypass).
+// Some kernel-level anti-cheats (e.g. ACE-Base used by Wuthering Waves) hook
+// PsSetLoadImageNotifyRoutine and refuse to map our (unsigned) DLL even when
+// the LoadLibraryW call originates from the victim thread itself. To work
+// around that, this path never calls LoadLibrary for TinecmaTool.dll:
+//   1. host reads TinecmaTool.dll from disk and parses its PE,
+//   2. host VirtualAllocEx's an image-sized region in the target,
+//   3. host writes section data, applies base relocations, resolves the
+//      import table by walking each dependency's export directory in the
+//      target's address space (no NtMapViewOfSection -> no image-load
+//      notify -> not seen by ACE),
+//   4. host re-protects each section with its PE characteristics,
+//   5. via thread-hijack we call RtlAddFunctionTable (x64 SEH), allocate a
+//      TLS slot for the current thread, run each TLS callback, then
+//      DllMain(DLL_PROCESS_ATTACH).
+// The module is intentionally *not* inserted into PEB.Ldr, so it remains
+// invisible to GetModuleHandle / EnumProcessModules - which is exactly what
+// keeps it out of anti-cheat module scans. Set
+// TINECMATOOL_USE_MANUALMAP_INJECT to 0 to skip this path and use the
+// thread-hijack LoadLibrary fallback instead.
+// ===========================================================================
+
+#ifndef TINECMATOOL_USE_MANUALMAP_INJECT
+#define TINECMATOOL_USE_MANUALMAP_INJECT 1
+#endif
+
 namespace
 {
 // total ms to wait for either DLL appearance (InjectDLL) or done-flag toggle
@@ -704,13 +731,985 @@ static bool InjectFunctionCall_ThreadHijack(HANDLE hProcess, DWORD pid, uintptr_
   return ok;
 }
 
+// ===========================================================================
+// Manual-map helpers (x64 only). 32-bit targets fall back to thread-hijack.
+// ===========================================================================
+
+#if defined(_M_X64) || defined(__x86_64__)
+
+// Read an arbitrary blob from the target process. Returns true iff all bytes
+// were transferred.
+static bool MM_ReadRemote(HANDLE hProcess, const void *addr, void *out, size_t len)
+{
+  SIZE_T n = 0;
+  return ReadProcessMemory(hProcess, addr, out, len, &n) && n == len;
+}
+
+// Read a NUL-terminated ASCII string from the target. Caller-bounded; returns
+// false if the bound is hit without seeing a NUL.
+static bool MM_ReadRemoteCString(HANDLE hProcess, const void *addr, char *out, size_t maxLen)
+{
+  for(size_t i = 0; i < maxLen; i++)
+  {
+    SIZE_T n = 0;
+    char c = 0;
+    if(!ReadProcessMemory(hProcess, (const uint8_t *)addr + i, &c, 1, &n) || n != 1)
+      return false;
+    out[i] = c;
+    if(c == 0)
+      return true;
+  }
+  return false;
+}
+
+// Slurp a local file into a byte vector. Caps at 512 MiB so a corrupt path can't
+// blow up RAM.
+static bool MM_ReadFileBytes(const wchar_t *path, rdcarray<uint8_t> &out)
+{
+  HANDLE hFile = CreateFileW(path, GENERIC_READ, FILE_SHARE_READ, NULL, OPEN_EXISTING,
+                             FILE_ATTRIBUTE_NORMAL, NULL);
+  if(hFile == INVALID_HANDLE_VALUE)
+    return false;
+  LARGE_INTEGER size = {};
+  if(!GetFileSizeEx(hFile, &size) || size.QuadPart <= 0 ||
+     size.QuadPart > (LONGLONG)(512ull * 1024ull * 1024ull))
+  {
+    CloseHandle(hFile);
+    return false;
+  }
+  out.resize((size_t)size.QuadPart);
+  DWORD read = 0;
+  BOOL ok = ReadFile(hFile, out.data(), (DWORD)size.QuadPart, &read, NULL);
+  CloseHandle(hFile);
+  return ok && read == (DWORD)size.QuadPart;
+}
+
+// Find a loaded module in the target by case-insensitive basename match
+// (e.g. "kernel32.dll").
+static uintptr_t MM_FindRemoteModuleBase(DWORD pid, const char *basenameLower)
+{
+  HANDLE snap = INVALID_HANDLE_VALUE;
+  for(int retry = 0; retry < 10; retry++)
+  {
+    snap = CreateToolhelp32Snapshot(TH32CS_SNAPMODULE, pid);
+    if(snap != INVALID_HANDLE_VALUE)
+      break;
+    if(GetLastError() != ERROR_BAD_LENGTH)
+      break;
+  }
+  if(snap == INVALID_HANDLE_VALUE)
+    return 0;
+
+  uintptr_t ret = 0;
+  MODULEENTRY32W me = {};
+  me.dwSize = sizeof(me);
+  if(Module32FirstW(snap, &me))
+  {
+    do
+    {
+      char ascii[MAX_MODULE_NAME32 + 1] = {};
+      for(int i = 0; me.szModule[i] != 0 && i < MAX_MODULE_NAME32; i++)
+        ascii[i] = (char)towlower(me.szModule[i]);
+      if(!strcmp(ascii, basenameLower))
+      {
+        ret = (uintptr_t)me.modBaseAddr;
+        break;
+      }
+    } while(Module32NextW(snap, &me));
+  }
+  CloseHandle(snap);
+  return ret;
+}
+
+// Build a shellcode trampoline that calls funcAddr with up to 4 register args
+// (Win64 ABI: RCX, RDX, R8, R9), optionally captures RAX into `resultSlot`,
+// optionally writes a done-flag, then returns to `origRip` -- same shape as
+// BuildHijackShellcode but for arbitrary multi-arg calls.
+static rdcarray<uint8_t> BuildCallShellcode(uintptr_t funcAddr, const rdcarray<uintptr_t> &args,
+                                            uintptr_t resultSlot, uintptr_t doneFlagAddr,
+                                            uintptr_t origRip)
+{
+  rdcarray<uint8_t> sc;
+  sc.reserve(192);
+
+  sc_push8(sc, 0x9C);    // pushfq
+  sc_push8(sc, 0x50);    // push rax
+  sc_push8(sc, 0x51);    // push rcx
+  sc_push8(sc, 0x52);    // push rdx
+  sc_push8(sc, 0x41);
+  sc_push8(sc, 0x50);    // push r8
+  sc_push8(sc, 0x41);
+  sc_push8(sc, 0x51);    // push r9
+  sc_push8(sc, 0x41);
+  sc_push8(sc, 0x52);    // push r10
+  sc_push8(sc, 0x41);
+  sc_push8(sc, 0x53);    // push r11
+
+  // sub rsp, 0x20  -- shadow space (32 bytes). We pushed 8 8-byte values
+  // (pushfq + 7 GPRs) above which is already 16-byte aligned, so a 32-byte
+  // adjustment keeps RSP 16-byte aligned before the upcoming `call`.
+  sc_push8(sc, 0x48);
+  sc_push8(sc, 0x83);
+  sc_push8(sc, 0xEC);
+  sc_push8(sc, 0x20);
+
+  if(args.size() > 0)
+  {
+    // mov rcx, imm64
+    sc_push8(sc, 0x48);
+    sc_push8(sc, 0xB9);
+    sc_push64(sc, (uint64_t)args[0]);
+  }
+  if(args.size() > 1)
+  {
+    // mov rdx, imm64
+    sc_push8(sc, 0x48);
+    sc_push8(sc, 0xBA);
+    sc_push64(sc, (uint64_t)args[1]);
+  }
+  if(args.size() > 2)
+  {
+    // mov r8, imm64
+    sc_push8(sc, 0x49);
+    sc_push8(sc, 0xB8);
+    sc_push64(sc, (uint64_t)args[2]);
+  }
+  if(args.size() > 3)
+  {
+    // mov r9, imm64
+    sc_push8(sc, 0x49);
+    sc_push8(sc, 0xB9);
+    sc_push64(sc, (uint64_t)args[3]);
+  }
+
+  // mov rax, funcAddr ; call rax
+  sc_push8(sc, 0x48);
+  sc_push8(sc, 0xB8);
+  sc_push64(sc, (uint64_t)funcAddr);
+  sc_push8(sc, 0xFF);
+  sc_push8(sc, 0xD0);
+
+  // add rsp, 0x20  -- matches the sub rsp, 0x20 above.
+  sc_push8(sc, 0x48);
+  sc_push8(sc, 0x83);
+  sc_push8(sc, 0xC4);
+  sc_push8(sc, 0x20);
+
+  if(resultSlot)
+  {
+    // mov rcx, resultSlot ; mov [rcx], rax
+    sc_push8(sc, 0x48);
+    sc_push8(sc, 0xB9);
+    sc_push64(sc, (uint64_t)resultSlot);
+    sc_push8(sc, 0x48);
+    sc_push8(sc, 0x89);
+    sc_push8(sc, 0x01);
+  }
+
+  if(doneFlagAddr)
+  {
+    // mov rax, doneFlagAddr ; mov byte [rax], 1
+    sc_push8(sc, 0x48);
+    sc_push8(sc, 0xB8);
+    sc_push64(sc, (uint64_t)doneFlagAddr);
+    sc_push8(sc, 0xC6);
+    sc_push8(sc, 0x00);
+    sc_push8(sc, 0x01);
+  }
+
+  sc_push8(sc, 0x41);
+  sc_push8(sc, 0x5B);    // pop r11
+  sc_push8(sc, 0x41);
+  sc_push8(sc, 0x5A);    // pop r10
+  sc_push8(sc, 0x41);
+  sc_push8(sc, 0x59);    // pop r9
+  sc_push8(sc, 0x41);
+  sc_push8(sc, 0x58);    // pop r8
+  sc_push8(sc, 0x5A);    // pop rdx
+  sc_push8(sc, 0x59);    // pop rcx
+  sc_push8(sc, 0x58);    // pop rax
+  sc_push8(sc, 0x9D);    // popfq
+
+  // push origRip ; mov [rsp+4], origRip>>32 ; ret
+  sc_push8(sc, 0x68);
+  sc_push32(sc, (uint32_t)origRip);
+  sc_push8(sc, 0xC7);
+  sc_push8(sc, 0x44);
+  sc_push8(sc, 0x24);
+  sc_push8(sc, 0x04);
+  sc_push32(sc, (uint32_t)(origRip >> 32));
+  sc_push8(sc, 0xC3);
+
+  return sc;
+}
+
+// Generalised thread-hijack call: up to 4 args, optional 8-byte RAX capture.
+// resultOut, if non-NULL, receives the 64-bit return value (RAX after the
+// call). Internally allocates a 16-byte slot in the target, polls a done flag
+// like ThreadHijackInvoke does.
+static bool ThreadHijackCall(HANDLE hProcess, DWORD pid, uintptr_t funcAddr,
+                             const rdcarray<uintptr_t> &args, uint64_t *resultOut,
+                             const char *debugTag)
+{
+  if(!pid)
+    pid = GetProcessId(hProcess);
+  if(!pid)
+  {
+    RDCERR("ThreadHijackCall(%s): no PID for process handle", debugTag);
+    return false;
+  }
+  HANDLE hThread = OpenInjectionThread(pid);
+  if(!hThread)
+  {
+    RDCERR("ThreadHijackCall(%s): no openable thread in PID %u (err %u)", debugTag, pid,
+           GetLastError());
+    return false;
+  }
+  DWORD prevSusp = SuspendThread(hThread);
+  if(prevSusp == (DWORD)-1)
+  {
+    RDCERR("ThreadHijackCall(%s): SuspendThread failed (err %u)", debugTag, GetLastError());
+    CloseHandle(hThread);
+    return false;
+  }
+  CONTEXT ctx = {};
+  ctx.ContextFlags = CONTEXT_FULL;
+  if(!GetThreadContext(hThread, &ctx))
+  {
+    RDCERR("ThreadHijackCall(%s): GetThreadContext failed (err %u)", debugTag, GetLastError());
+    ResumeThread(hThread);
+    CloseHandle(hThread);
+    return false;
+  }
+  uintptr_t origRip = (uintptr_t)ctx.Rip;
+
+  // 16-byte slot: byte 0..7 = result (RAX), byte 8 = done flag.
+  void *slot = VirtualAllocEx(hProcess, NULL, 16, MEM_COMMIT | MEM_RESERVE, PAGE_READWRITE);
+  if(!slot)
+  {
+    RDCERR("ThreadHijackCall(%s): VirtualAllocEx(slot) failed (err %u)", debugTag, GetLastError());
+    ResumeThread(hThread);
+    CloseHandle(hThread);
+    return false;
+  }
+  uint8_t zero[16] = {};
+  SIZE_T n = 0;
+  WriteProcessMemory(hProcess, slot, zero, sizeof(zero), &n);
+
+  uintptr_t resultSlot = resultOut ? (uintptr_t)slot : 0;
+  uintptr_t doneFlag = (uintptr_t)slot + 8;
+
+  rdcarray<uint8_t> sc =
+      BuildCallShellcode(funcAddr, args, resultSlot, doneFlag, origRip);
+
+  void *remoteCode = VirtualAllocEx(hProcess, NULL, sc.size(), MEM_COMMIT | MEM_RESERVE,
+                                    PAGE_EXECUTE_READWRITE);
+  if(!remoteCode)
+  {
+    RDCERR("ThreadHijackCall(%s): VirtualAllocEx(code) failed (err %u)", debugTag, GetLastError());
+    VirtualFreeEx(hProcess, slot, 0, MEM_RELEASE);
+    ResumeThread(hThread);
+    CloseHandle(hThread);
+    return false;
+  }
+  if(!WriteProcessMemory(hProcess, remoteCode, sc.data(), sc.size(), &n) || n != sc.size())
+  {
+    RDCERR("ThreadHijackCall(%s): WriteProcessMemory(code) failed (err %u)", debugTag,
+           GetLastError());
+    VirtualFreeEx(hProcess, remoteCode, 0, MEM_RELEASE);
+    VirtualFreeEx(hProcess, slot, 0, MEM_RELEASE);
+    ResumeThread(hThread);
+    CloseHandle(hThread);
+    return false;
+  }
+
+  ctx.Rip = (DWORD64)(uintptr_t)remoteCode;
+  if(!SetThreadContext(hThread, &ctx))
+  {
+    RDCERR("ThreadHijackCall(%s): SetThreadContext failed (err %u)", debugTag, GetLastError());
+    VirtualFreeEx(hProcess, remoteCode, 0, MEM_RELEASE);
+    VirtualFreeEx(hProcess, slot, 0, MEM_RELEASE);
+    ResumeThread(hThread);
+    CloseHandle(hThread);
+    return false;
+  }
+  for(DWORD i = 0; i <= prevSusp; i++)
+    ResumeThread(hThread);
+
+  bool ok = false;
+  for(DWORD waited = 0; waited < kHijackTimeoutMs; waited += kHijackPollMs)
+  {
+    uint8_t b = 0;
+    if(RemoteReadByte(hProcess, (uint8_t *)slot + 8, b) && b)
+    {
+      ok = true;
+      break;
+    }
+    Sleep(kHijackPollMs);
+  }
+  if(!ok)
+  {
+    RDCERR("ThreadHijackCall(%s): timed out waiting for done-flag", debugTag);
+  }
+  if(ok && resultOut)
+  {
+    uint64_t rax = 0;
+    if(MM_ReadRemote(hProcess, slot, &rax, sizeof(rax)))
+      *resultOut = rax;
+    else
+      ok = false;
+  }
+
+  VirtualFreeEx(hProcess, remoteCode, 0, MEM_RELEASE);
+  VirtualFreeEx(hProcess, slot, 0, MEM_RELEASE);
+  CloseHandle(hThread);
+  return ok;
+}
+
+// Resolve an import by leaning on the *host* process loader. Works for API
+// Set names (api-ms-win-*) because LoadLibraryExA in our own process resolves
+// them through the host's ApiSet schema -- since host and target share the
+// same OS, the resolution is consistent. We then translate the host-side
+// function address into the target's identical module via basename + RVA.
+//
+// This path is essential because the target may be in CREATE_SUSPENDED state
+// where calling LoadLibrary inside it would deadlock (LdrInitializeThunk has
+// not yet run loader init). It also avoids leaving any IOCs (no remote
+// LoadLibrary call shows up to anti-cheat scanners during stage A).
+//
+// Returns 0 if the host can't load the dll, the function is missing locally,
+// or the resolved canonical module isn't present in the target.
+static uintptr_t MM_ResolveViaHost(DWORD pid, const char *dllName, const char *funcName,
+                                   WORD ordinal)
+{
+  HMODULE localM = LoadLibraryExA(dllName, NULL, LOAD_LIBRARY_SEARCH_SYSTEM32);
+  if(!localM)
+    localM = LoadLibraryA(dllName);
+  if(!localM)
+    return 0;
+
+  FARPROC fp = funcName ? GetProcAddress(localM, funcName)
+                        : GetProcAddress(localM, MAKEINTRESOURCEA(ordinal));
+  if(!fp)
+    return 0;
+
+  wchar_t modPath[MAX_PATH] = {};
+  if(!GetModuleFileNameW(localM, modPath, MAX_PATH))
+    return 0;
+  const wchar_t *bn = wcsrchr(modPath, L'\\');
+  bn = bn ? bn + 1 : modPath;
+
+  char basenameLower[MAX_PATH] = {};
+  for(int i = 0; bn[i] != 0 && i < MAX_PATH - 1; i++)
+    basenameLower[i] = (char)towlower(bn[i]);
+
+  uintptr_t targetBase = MM_FindRemoteModuleBase(pid, basenameLower);
+  if(!targetBase)
+    return 0;
+
+  uintptr_t rva = (uintptr_t)fp - (uintptr_t)localM;
+  return targetBase + rva;
+}
+
+// (MM_RemoteLoadLibrary intentionally removed -- stage A must never call
+//  LoadLibrary inside a CREATE_SUSPENDED target. All dependency resolution
+//  goes through MM_ResolveViaHost, which works for API Sets too.)
+
+// Resolve a single import (by name or by ordinal) inside a remote module. Walks
+// the target's IMAGE_EXPORT_DIRECTORY directly via ReadProcessMemory, so we
+// don't have to load the dependency DLL into our own host address space and
+// risk version skew.
+static uintptr_t MM_RemoteResolveExport(HANDLE hProcess, DWORD pid, uintptr_t moduleBase,
+                                        const char *funcName, WORD ordinal, int depth);
+
+static uintptr_t MM_ResolveForwarder(HANDLE hProcess, DWORD pid, const char *forwarder, int depth)
+{
+  // forwarder format: "DllBaseName.FuncName" or "DllBaseName.#ordinal".
+  // DllBaseName may itself be an API Set (api-ms-win-* / ext-ms-win-*) which
+  // does *not* exist as a real PE in the target. We always try host-side
+  // resolution first, which handles API Sets transparently.
+  if(depth > 6)
+    return 0;
+  const char *dot = strchr(forwarder, '.');
+  if(!dot)
+    return 0;
+
+  char dllPart[128] = {};
+  size_t dllLen = (size_t)(dot - forwarder);
+  if(dllLen >= sizeof(dllPart) - 5)
+    return 0;
+  memcpy(dllPart, forwarder, dllLen);
+  // Append ".dll" if the basename doesn't already carry an extension (forwarders
+  // like "NTDLL.RtlXxx" omit it).
+  bool hasExt = false;
+  for(size_t i = 0; i < dllLen; i++)
+    if(dllPart[i] == '.')
+      hasExt = true;
+  if(!hasExt)
+    strcat_s(dllPart, ".dll");
+
+  const char *funcPart = dot + 1;
+  bool isOrdinal = (funcPart[0] == '#');
+  WORD ordinal = isOrdinal ? (WORD)atoi(funcPart + 1) : (WORD)0;
+
+  // 1) Host-side resolution (works for API Sets and all system DLLs).
+  uintptr_t addr =
+      MM_ResolveViaHost(pid, dllPart, isOrdinal ? NULL : funcPart, ordinal);
+  if(addr)
+    return addr;
+
+  // 2) Fall back to target-side lookup + recursive export walk. Crucially we
+  // do *not* invoke MM_RemoteLoadLibrary here: CREATE_SUSPENDED targets can't
+  // safely call LoadLibrary.
+  rdcstr lower = strlower(rdcstr(dllPart));
+  uintptr_t mod = MM_FindRemoteModuleBase(pid, lower.c_str());
+  if(!mod)
+    return 0;
+  return MM_RemoteResolveExport(hProcess, pid, mod, isOrdinal ? NULL : funcPart, ordinal,
+                                depth + 1);
+}
+
+static uintptr_t MM_RemoteResolveExport(HANDLE hProcess, DWORD pid, uintptr_t moduleBase,
+                                        const char *funcName, WORD ordinal, int depth)
+{
+  IMAGE_DOS_HEADER dos = {};
+  if(!MM_ReadRemote(hProcess, (void *)moduleBase, &dos, sizeof(dos)) ||
+     dos.e_magic != IMAGE_DOS_SIGNATURE)
+    return 0;
+  IMAGE_NT_HEADERS64 nt = {};
+  if(!MM_ReadRemote(hProcess, (void *)(moduleBase + dos.e_lfanew), &nt, sizeof(nt)) ||
+     nt.Signature != IMAGE_NT_SIGNATURE)
+    return 0;
+  IMAGE_DATA_DIRECTORY exportDir = nt.OptionalHeader.DataDirectory[IMAGE_DIRECTORY_ENTRY_EXPORT];
+  if(exportDir.Size == 0 || exportDir.Size > 0x100000)
+    return 0;
+
+  rdcarray<uint8_t> exportBuf;
+  exportBuf.resize(exportDir.Size);
+  if(!MM_ReadRemote(hProcess, (void *)(moduleBase + exportDir.VirtualAddress), exportBuf.data(),
+                    exportDir.Size))
+    return 0;
+  IMAGE_EXPORT_DIRECTORY *exp = (IMAGE_EXPORT_DIRECTORY *)exportBuf.data();
+
+  rdcarray<DWORD> funcRvas;
+  funcRvas.resize(exp->NumberOfFunctions);
+  if(!MM_ReadRemote(hProcess, (void *)(moduleBase + exp->AddressOfFunctions), funcRvas.data(),
+                    exp->NumberOfFunctions * sizeof(DWORD)))
+    return 0;
+
+  DWORD finalRva = 0;
+  if(funcName)
+  {
+    rdcarray<DWORD> nameRvas;
+    nameRvas.resize(exp->NumberOfNames);
+    if(!MM_ReadRemote(hProcess, (void *)(moduleBase + exp->AddressOfNames), nameRvas.data(),
+                      exp->NumberOfNames * sizeof(DWORD)))
+      return 0;
+    rdcarray<WORD> ordTable;
+    ordTable.resize(exp->NumberOfNames);
+    if(!MM_ReadRemote(hProcess, (void *)(moduleBase + exp->AddressOfNameOrdinals), ordTable.data(),
+                      exp->NumberOfNames * sizeof(WORD)))
+      return 0;
+
+    for(DWORD i = 0; i < exp->NumberOfNames; i++)
+    {
+      char buf[256] = {};
+      if(!MM_ReadRemoteCString(hProcess, (void *)(moduleBase + nameRvas[i]), buf, sizeof(buf)))
+        continue;
+      if(!strcmp(buf, funcName))
+      {
+        WORD idx = ordTable[i];
+        if(idx < exp->NumberOfFunctions)
+          finalRva = funcRvas[idx];
+        break;
+      }
+    }
+  }
+  else
+  {
+    DWORD idx = (DWORD)ordinal - exp->Base;
+    if(idx < exp->NumberOfFunctions)
+      finalRva = funcRvas[idx];
+  }
+  if(!finalRva)
+    return 0;
+
+  // Forwarder check: function RVA points into the export directory's data
+  // range -> the "function" is actually an ASCII forwarder string.
+  if(finalRva >= exportDir.VirtualAddress && finalRva < exportDir.VirtualAddress + exportDir.Size)
+  {
+    DWORD off = finalRva - exportDir.VirtualAddress;
+    if(off >= exportDir.Size)
+      return 0;
+    char fwd[256] = {};
+    strncpy_s(fwd, (char *)exportBuf.data() + off, sizeof(fwd) - 1);
+    return MM_ResolveForwarder(hProcess, pid, fwd, depth);
+  }
+
+  return moduleBase + finalRva;
+}
+
+// Apply IMAGE_REL_BASED_DIR64 / HIGHLOW relocations onto the locally-built
+// shadow image, given the actual remote base.
+static void MM_ApplyRelocations(uint8_t *image, IMAGE_NT_HEADERS64 *nt, int64_t delta)
+{
+  IMAGE_DATA_DIRECTORY reloc = nt->OptionalHeader.DataDirectory[IMAGE_DIRECTORY_ENTRY_BASERELOC];
+  if(!reloc.VirtualAddress || !reloc.Size)
+    return;
+  uint8_t *p = image + reloc.VirtualAddress;
+  uint8_t *end = p + reloc.Size;
+  while(p + sizeof(IMAGE_BASE_RELOCATION) <= end)
+  {
+    IMAGE_BASE_RELOCATION *blk = (IMAGE_BASE_RELOCATION *)p;
+    if(blk->SizeOfBlock < sizeof(IMAGE_BASE_RELOCATION) || blk->SizeOfBlock > (DWORD)(end - p))
+      break;
+    DWORD count = (blk->SizeOfBlock - sizeof(IMAGE_BASE_RELOCATION)) / sizeof(WORD);
+    WORD *entries = (WORD *)(p + sizeof(IMAGE_BASE_RELOCATION));
+    for(DWORD i = 0; i < count; i++)
+    {
+      WORD type = (WORD)(entries[i] >> 12);
+      WORD off = (WORD)(entries[i] & 0xFFF);
+      uint8_t *target = image + blk->VirtualAddress + off;
+      switch(type)
+      {
+        case IMAGE_REL_BASED_ABSOLUTE: break;
+        case IMAGE_REL_BASED_DIR64: *(uint64_t *)target += (uint64_t)delta; break;
+        case IMAGE_REL_BASED_HIGHLOW: *(uint32_t *)target += (uint32_t)delta; break;
+        default:
+          RDCWARN("ManualMap: unhandled reloc type %u at RVA 0x%x+0x%x", type, blk->VirtualAddress,
+                  off);
+          break;
+      }
+    }
+    p += blk->SizeOfBlock;
+  }
+}
+
+// Resolve every import in the locally-built shadow image, patching the IAT
+// (FirstThunk) in-place. Returns false on any unresolved import.
+static bool MM_ResolveImports(HANDLE hProcess, DWORD pid, uint8_t *image,
+                              IMAGE_NT_HEADERS64 *nt)
+{
+  IMAGE_DATA_DIRECTORY imp = nt->OptionalHeader.DataDirectory[IMAGE_DIRECTORY_ENTRY_IMPORT];
+  if(!imp.VirtualAddress || !imp.Size)
+    return true;
+
+  IMAGE_IMPORT_DESCRIPTOR *desc = (IMAGE_IMPORT_DESCRIPTOR *)(image + imp.VirtualAddress);
+  for(; desc->Name; desc++)
+  {
+    const char *dllName = (const char *)(image + desc->Name);
+    rdcstr lower = strlower(rdcstr(dllName));
+
+    // Look up the dependency in the target. For most system DLLs it's already
+    // loaded (kernel32, user32, dxgi, ...). For API Set names it won't be -
+    // we leave modBase=0 and let the per-function path fall through to host-
+    // side resolution.
+    uintptr_t modBase = MM_FindRemoteModuleBase(pid, lower.c_str());
+
+    DWORD nameThunkRva = desc->OriginalFirstThunk ? desc->OriginalFirstThunk : desc->FirstThunk;
+    IMAGE_THUNK_DATA64 *nameThunk = (IMAGE_THUNK_DATA64 *)(image + nameThunkRva);
+    IMAGE_THUNK_DATA64 *iatThunk = (IMAGE_THUNK_DATA64 *)(image + desc->FirstThunk);
+
+    for(; nameThunk->u1.AddressOfData; nameThunk++, iatThunk++)
+    {
+      uintptr_t addr = 0;
+      const char *funcName = NULL;
+      WORD ord = 0;
+      bool byOrdinal = IMAGE_SNAP_BY_ORDINAL64(nameThunk->u1.Ordinal);
+      if(byOrdinal)
+      {
+        ord = (WORD)IMAGE_ORDINAL64(nameThunk->u1.Ordinal);
+      }
+      else
+      {
+        IMAGE_IMPORT_BY_NAME *ibn = (IMAGE_IMPORT_BY_NAME *)(image + nameThunk->u1.AddressOfData);
+        funcName = ibn->Name;
+      }
+
+      // 1) Try the target's own copy (handles forwarders to API Sets via
+      // MM_RemoteResolveExport -> MM_ResolveForwarder, which itself prefers
+      // host-side resolution).
+      if(modBase)
+        addr = MM_RemoteResolveExport(hProcess, pid, modBase, funcName, ord, 0);
+
+      // 2) Fall back to host-side resolution. Required for imports whose DLL
+      // is an API Set (no real module in the target) and also a safety net
+      // for any export that didn't resolve through the target's tables (e.g.
+      // mismatched OS minor versions).
+      if(!addr)
+        addr = MM_ResolveViaHost(pid, dllName, funcName, ord);
+
+      if(!addr)
+      {
+        if(byOrdinal)
+          RDCERR("ManualMap: couldn't resolve ordinal #%u in '%s'", (unsigned)ord, dllName);
+        else
+          RDCERR("ManualMap: couldn't resolve '%s' in '%s'", funcName, dllName);
+        return false;
+      }
+      iatThunk->u1.Function = (ULONGLONG)addr;
+    }
+  }
+  return true;
+}
+
+static DWORD MM_SectionToProtection(DWORD chars)
+{
+  bool exec = (chars & IMAGE_SCN_MEM_EXECUTE) != 0;
+  bool read = (chars & IMAGE_SCN_MEM_READ) != 0;
+  bool write = (chars & IMAGE_SCN_MEM_WRITE) != 0;
+  if(exec && write)
+    return PAGE_EXECUTE_READWRITE;
+  if(exec && read)
+    return PAGE_EXECUTE_READ;
+  if(exec)
+    return PAGE_EXECUTE;
+  if(write)
+    return PAGE_READWRITE;
+  if(read)
+    return PAGE_READONLY;
+  return PAGE_NOACCESS;
+}
+
+static void MM_ApplyProtections(HANDLE hProcess, void *remoteImage, IMAGE_NT_HEADERS64 *nt)
+{
+  DWORD oldProt = 0;
+  // headers: read-only is sufficient (PE loader leaves them readable for
+  // GetProcAddress et al). We don't insert into PEB.Ldr but TinecmaTool may
+  // poke its own headers, so keep them readable.
+  if(nt->OptionalHeader.SizeOfHeaders > 0)
+    VirtualProtectEx(hProcess, remoteImage, nt->OptionalHeader.SizeOfHeaders, PAGE_READONLY,
+                     &oldProt);
+  IMAGE_SECTION_HEADER *sec = IMAGE_FIRST_SECTION(nt);
+  for(WORD i = 0; i < nt->FileHeader.NumberOfSections; i++)
+  {
+    DWORD sectSize = sec[i].Misc.VirtualSize;
+    if(sectSize == 0)
+      sectSize = sec[i].SizeOfRawData;
+    if(sectSize == 0)
+      continue;
+    DWORD prot = MM_SectionToProtection(sec[i].Characteristics);
+    VirtualProtectEx(hProcess, (uint8_t *)remoteImage + sec[i].VirtualAddress, sectSize, prot,
+                     &oldProt);
+  }
+}
+
+// Set up a TLS slot for the hijacked thread so that DllMain (and code it calls
+// on this thread) can access __declspec(thread) / thread_local variables.
+// IMPORTANT LIMITATION: this only initialises the slot for the *current*
+// (hijacked) thread. Other live threads in the target will read NULL out of
+// their slot when first touching a thread-local, so any code path that
+// dispatches thread-local-dependent work onto a foreign thread before that
+// thread has independently faulted in TLS will misbehave. RenderDoc's capture
+// hooks are predominantly main-thread-driven, so this is good enough in
+// practice; document the caveat in TINECMATOOL_MANUALMAP_INJECT.md.
+static bool MM_SetupTls(HANDLE hProcess, DWORD pid, uintptr_t remoteBase, uint8_t *shadow,
+                        IMAGE_NT_HEADERS64 *nt)
+{
+  IMAGE_DATA_DIRECTORY tlsDir = nt->OptionalHeader.DataDirectory[IMAGE_DIRECTORY_ENTRY_TLS];
+  if(tlsDir.Size == 0)
+    return true;
+
+  IMAGE_TLS_DIRECTORY64 *tls = (IMAGE_TLS_DIRECTORY64 *)(shadow + tlsDir.VirtualAddress);
+  uint64_t rawStart = tls->StartAddressOfRawData;
+  uint64_t rawEnd = tls->EndAddressOfRawData;
+  if(rawEnd < rawStart)
+    return false;
+  uint64_t rawSize = rawEnd - rawStart;
+  uint64_t zeroFill = tls->SizeOfZeroFill;
+
+  if(rawStart < remoteBase ||
+     rawStart - remoteBase >= (uint64_t)nt->OptionalHeader.SizeOfImage)
+    return false;
+  uint64_t shadowRawOff = rawStart - remoteBase;
+
+  uint64_t indexAddr = tls->AddressOfIndex;
+  if(indexAddr < remoteBase ||
+     indexAddr - remoteBase + sizeof(DWORD) > (uint64_t)nt->OptionalHeader.SizeOfImage)
+    return false;
+
+  HMODULE k = GetModuleHandleA("kernel32.dll");
+  if(!k)
+    return false;
+  uintptr_t tlsAlloc = (uintptr_t)GetProcAddress(k, "TlsAlloc");
+  uintptr_t tlsSetValue = (uintptr_t)GetProcAddress(k, "TlsSetValue");
+  if(!tlsAlloc || !tlsSetValue)
+    return false;
+
+  uint64_t allocRet = 0;
+  rdcarray<uintptr_t> noArgs;
+  if(!ThreadHijackCall(hProcess, pid, tlsAlloc, noArgs, &allocRet, "MM-TlsAlloc"))
+    return false;
+  DWORD slot = (DWORD)allocRet;
+  if(slot == TLS_OUT_OF_INDEXES)
+  {
+    RDCERR("ManualMap: TlsAlloc returned TLS_OUT_OF_INDEXES");
+    return false;
+  }
+  RDCLOG("ManualMap: TLS slot %u allocated for module @ 0x%llx", slot, (uint64_t)remoteBase);
+
+  // Patch _tls_index in the remote image.
+  SIZE_T n = 0;
+  if(!WriteProcessMemory(hProcess, (void *)indexAddr, &slot, sizeof(slot), &n) || n != sizeof(slot))
+    return false;
+
+  // Allocate the per-thread TLS data block in the target and copy raw_data.
+  SIZE_T blockSize = (SIZE_T)(rawSize + zeroFill + 16);
+  void *remoteTls =
+      VirtualAllocEx(hProcess, NULL, blockSize, MEM_COMMIT | MEM_RESERVE, PAGE_READWRITE);
+  if(!remoteTls)
+    return false;
+  if(rawSize)
+  {
+    if(!WriteProcessMemory(hProcess, remoteTls, shadow + shadowRawOff, (SIZE_T)rawSize, &n) ||
+       n != rawSize)
+    {
+      VirtualFreeEx(hProcess, remoteTls, 0, MEM_RELEASE);
+      return false;
+    }
+  }
+
+  rdcarray<uintptr_t> setArgs;
+  setArgs.push_back((uintptr_t)slot);
+  setArgs.push_back((uintptr_t)remoteTls);
+  if(!ThreadHijackCall(hProcess, pid, tlsSetValue, setArgs, NULL, "MM-TlsSetValue"))
+  {
+    VirtualFreeEx(hProcess, remoteTls, 0, MEM_RELEASE);
+    return false;
+  }
+  return true;
+}
+
+// Walk the TLS callback array (NULL-terminated PIMAGE_TLS_CALLBACK[]) in the
+// shadow image, returning the (already-relocated) absolute addresses.
+static rdcarray<uintptr_t> MM_GatherTlsCallbacks(uintptr_t remoteBase, uint8_t *shadow,
+                                                 IMAGE_NT_HEADERS64 *nt)
+{
+  rdcarray<uintptr_t> cbs;
+  IMAGE_DATA_DIRECTORY tlsDir = nt->OptionalHeader.DataDirectory[IMAGE_DIRECTORY_ENTRY_TLS];
+  if(tlsDir.Size == 0)
+    return cbs;
+  IMAGE_TLS_DIRECTORY64 *tls = (IMAGE_TLS_DIRECTORY64 *)(shadow + tlsDir.VirtualAddress);
+  if(!tls->AddressOfCallBacks)
+    return cbs;
+  uint64_t cbAddr = tls->AddressOfCallBacks;
+  if(cbAddr < remoteBase ||
+     cbAddr - remoteBase >= (uint64_t)nt->OptionalHeader.SizeOfImage)
+    return cbs;
+  uint64_t *p = (uint64_t *)(shadow + (cbAddr - remoteBase));
+  while(*p)
+  {
+    cbs.push_back((uintptr_t)*p);
+    p++;
+  }
+  return cbs;
+}
+
+// Register the x64 exception table so SEH / stack unwind works inside the
+// manually mapped module. Best-effort: failure isn't fatal but logs.
+static void MM_RegisterExceptionTable(HANDLE hProcess, DWORD pid, uintptr_t remoteBase,
+                                      IMAGE_NT_HEADERS64 *nt)
+{
+  IMAGE_DATA_DIRECTORY excp = nt->OptionalHeader.DataDirectory[IMAGE_DIRECTORY_ENTRY_EXCEPTION];
+  if(excp.Size == 0 || excp.Size % sizeof(IMAGE_RUNTIME_FUNCTION_ENTRY) != 0)
+    return;
+  HMODULE ntdll = GetModuleHandleA("ntdll.dll");
+  if(!ntdll)
+    return;
+  uintptr_t rtlAdd = (uintptr_t)GetProcAddress(ntdll, "RtlAddFunctionTable");
+  if(!rtlAdd)
+    return;
+  DWORD count = excp.Size / sizeof(IMAGE_RUNTIME_FUNCTION_ENTRY);
+  rdcarray<uintptr_t> args;
+  args.push_back(remoteBase + excp.VirtualAddress);
+  args.push_back((uintptr_t)count);
+  args.push_back(remoteBase);
+  uint64_t ret = 0;
+  if(!ThreadHijackCall(hProcess, pid, rtlAdd, args, &ret, "MM-RtlAddFunctionTable"))
+  {
+    RDCWARN("ManualMap: RtlAddFunctionTable failed; SEH unwind may be unreliable");
+  }
+}
+
+// Main entry: returns the remote image base on success, 0 on any failure
+// (the caller should fall back to the thread-hijack LoadLibrary path).
+static uintptr_t InjectDLL_ManualMap(HANDLE hProcess, DWORD pid, const rdcwstr &libName)
+{
+  rdcarray<uint8_t> fileBytes;
+  if(!MM_ReadFileBytes(libName.c_str(), fileBytes))
+  {
+    RDCWARN("ManualMap: couldn't read DLL '%ls' (err %u); fallback engaged", libName.c_str(),
+            GetLastError());
+    return 0;
+  }
+  if(fileBytes.size() < sizeof(IMAGE_DOS_HEADER))
+    return 0;
+
+  IMAGE_DOS_HEADER *dos = (IMAGE_DOS_HEADER *)fileBytes.data();
+  if(dos->e_magic != IMAGE_DOS_SIGNATURE)
+    return 0;
+  if((size_t)dos->e_lfanew + sizeof(IMAGE_NT_HEADERS64) > fileBytes.size())
+    return 0;
+  IMAGE_NT_HEADERS64 *nt = (IMAGE_NT_HEADERS64 *)(fileBytes.data() + dos->e_lfanew);
+  if(nt->Signature != IMAGE_NT_SIGNATURE)
+    return 0;
+  if(nt->FileHeader.Machine != IMAGE_FILE_MACHINE_AMD64)
+  {
+    RDCWARN("ManualMap: '%ls' is not AMD64; falling back", libName.c_str());
+    return 0;
+  }
+  if(nt->OptionalHeader.Magic != IMAGE_NT_OPTIONAL_HDR64_MAGIC)
+    return 0;
+  if(nt->FileHeader.SizeOfOptionalHeader < sizeof(IMAGE_OPTIONAL_HEADER64))
+    return 0;
+  if(nt->OptionalHeader.SizeOfImage == 0 ||
+     nt->OptionalHeader.SizeOfImage > 512 * 1024 * 1024u)
+    return 0;
+
+  size_t imageSize = nt->OptionalHeader.SizeOfImage;
+  rdcarray<uint8_t> shadow;
+  shadow.resize(imageSize);
+  memset(shadow.data(), 0, imageSize);
+
+  if(nt->OptionalHeader.SizeOfHeaders > imageSize)
+    return 0;
+  memcpy(shadow.data(), fileBytes.data(), nt->OptionalHeader.SizeOfHeaders);
+
+  IMAGE_SECTION_HEADER *sec = IMAGE_FIRST_SECTION(nt);
+  for(WORD i = 0; i < nt->FileHeader.NumberOfSections; i++)
+  {
+    if(sec[i].SizeOfRawData == 0)
+      continue;
+    if((size_t)sec[i].VirtualAddress + sec[i].SizeOfRawData > imageSize)
+      return 0;
+    if((size_t)sec[i].PointerToRawData + sec[i].SizeOfRawData > fileBytes.size())
+      return 0;
+    memcpy(shadow.data() + sec[i].VirtualAddress, fileBytes.data() + sec[i].PointerToRawData,
+           sec[i].SizeOfRawData);
+  }
+
+  // Try the preferred image base first so we can keep relocations a no-op.
+  void *remoteImage = VirtualAllocEx(hProcess, (LPVOID)nt->OptionalHeader.ImageBase, imageSize,
+                                     MEM_COMMIT | MEM_RESERVE, PAGE_READWRITE);
+  if(!remoteImage)
+  {
+    remoteImage = VirtualAllocEx(hProcess, NULL, imageSize, MEM_COMMIT | MEM_RESERVE,
+                                 PAGE_READWRITE);
+  }
+  if(!remoteImage)
+  {
+    RDCERR("ManualMap: VirtualAllocEx(%zu bytes) failed (err %u)", imageSize, GetLastError());
+    return 0;
+  }
+
+  int64_t delta = (int64_t)((uintptr_t)remoteImage - nt->OptionalHeader.ImageBase);
+  if(delta != 0)
+    MM_ApplyRelocations(shadow.data(), nt, delta);
+
+  if(!MM_ResolveImports(hProcess, pid, shadow.data(), nt))
+  {
+    VirtualFreeEx(hProcess, remoteImage, 0, MEM_RELEASE);
+    return 0;
+  }
+
+  // Commit the fully-resolved image to the target in one shot.
+  SIZE_T n = 0;
+  if(!WriteProcessMemory(hProcess, remoteImage, shadow.data(), imageSize, &n) || n != imageSize)
+  {
+    RDCERR("ManualMap: WriteProcessMemory(image) failed (err %u)", GetLastError());
+    VirtualFreeEx(hProcess, remoteImage, 0, MEM_RELEASE);
+    return 0;
+  }
+
+  MM_ApplyProtections(hProcess, remoteImage, nt);
+
+  if(!MM_SetupTls(hProcess, pid, (uintptr_t)remoteImage, shadow.data(), nt))
+  {
+    RDCWARN("ManualMap: TLS setup failed; continuing without per-thread storage (may crash on "
+            "first thread_local access)");
+  }
+
+  MM_RegisterExceptionTable(hProcess, pid, (uintptr_t)remoteImage, nt);
+
+  // TLS callbacks (run on the hijacked thread, in declaration order).
+  {
+    rdcarray<uintptr_t> cbs = MM_GatherTlsCallbacks((uintptr_t)remoteImage, shadow.data(), nt);
+    for(size_t i = 0; i < cbs.size(); i++)
+    {
+      rdcarray<uintptr_t> args;
+      args.push_back((uintptr_t)remoteImage);
+      args.push_back((uintptr_t)DLL_PROCESS_ATTACH);
+      args.push_back(0);
+      if(!ThreadHijackCall(hProcess, pid, cbs[i], args, NULL, "MM-TLSCallback"))
+      {
+        RDCERR("ManualMap: TLS callback %zu failed", i);
+        // Don't free the image - whatever did run may have grabbed handles.
+        return 0;
+      }
+    }
+  }
+
+  // DllMain (entry point).
+  uintptr_t entry = (uintptr_t)remoteImage + nt->OptionalHeader.AddressOfEntryPoint;
+  if(nt->OptionalHeader.AddressOfEntryPoint != 0)
+  {
+    rdcarray<uintptr_t> args;
+    args.push_back((uintptr_t)remoteImage);
+    args.push_back((uintptr_t)DLL_PROCESS_ATTACH);
+    args.push_back(0);
+    uint64_t ret = 0;
+    if(!ThreadHijackCall(hProcess, pid, entry, args, &ret, "MM-DllMain"))
+    {
+      RDCERR("ManualMap: DllMain invocation failed");
+      return 0;
+    }
+    if(ret == 0)
+    {
+      RDCERR("ManualMap: DllMain returned FALSE for '%ls'", libName.c_str());
+      return 0;
+    }
+  }
+
+  RDCLOG("ManualMap: '%ls' mapped at 0x%llx (size=%zu, delta=%lld)", libName.c_str(),
+         (uint64_t)remoteImage, imageSize, (long long)delta);
+
+  return (uintptr_t)remoteImage;
+}
+
+#else    // !x64
+
+static uintptr_t InjectDLL_ManualMap(HANDLE, DWORD, const rdcwstr &)
+{
+  // 32-bit manual map not implemented; let the caller fall back.
+  return 0;
+}
+
+#endif    // x64
+
 }    // anonymous namespace
 
-void InjectDLL(HANDLE hProcess, rdcwstr libName)
+// Returns the remote module base when the manual-map path is taken (the
+// module is *not* present in PEB.Ldr in that case, so FindRemoteDLL cannot
+// see it; callers must prefer the return value over FindRemoteDLL). Returns 0
+// when manual-map was bypassed and a real LoadLibrary path completed -- in
+// that case FindRemoteDLL works as before.
+uintptr_t InjectDLL(HANDLE hProcess, rdcwstr libName)
 {
+  DWORD pid = GetProcessId(hProcess);
+
+#if TINECMATOOL_USE_MANUALMAP_INJECT
+  {
+    uintptr_t mappedBase = InjectDLL_ManualMap(hProcess, pid, libName);
+    if(mappedBase != 0)
+      return mappedBase;
+    RDCWARN("Manual-map inject failed for '%ls'; falling back to thread-hijack LoadLibrary",
+            libName.c_str());
+  }
+#endif
+
 #if TINECMATOOL_USE_THREADHIJACK_INJECT
-  if(InjectDLL_ThreadHijack(hProcess, GetProcessId(hProcess), libName))
-    return;
+  if(InjectDLL_ThreadHijack(hProcess, pid, libName))
+    return 0;
   RDCWARN("Thread-hijack DLL inject failed; falling back to CreateRemoteThread for '%ls'",
           libName.c_str());
 #endif
@@ -723,7 +1722,7 @@ void InjectDLL(HANDLE hProcess, rdcwstr libName)
   if(kernel32 == NULL)
   {
     RDCERR("Couldn't get handle for kernel32.dll");
-    return;
+    return 0;
   }
 
   void *remoteMem =
@@ -758,6 +1757,7 @@ void InjectDLL(HANDLE hProcess, rdcwstr libName)
   {
     RDCERR("Couldn't allocate remote memory for DLL '%ls': %u", libName.c_str(), GetLastError());
   }
+  return 0;
 }
 
 uintptr_t FindRemoteDLL(DWORD pid, rdcstr libName)
@@ -1441,11 +2441,14 @@ rdcpair<RDResult, uint32_t> Process::InjectIntoProcess(uint32_t pid,
     return {ResultCode::Succeeded, (uint32_t)exitCode};
   }
 
-  InjectDLL(hProcess, renderdocPath);
+  uintptr_t manualMapBase = InjectDLL(hProcess, renderdocPath);
 
   const char *rdoc_dll = STRINGIZE(RDOC_BASE_NAME);
 
-  uintptr_t loc = FindRemoteDLL(pid, STRINGIZE(RDOC_BASE_NAME) ".dll");
+  // Manual-mapped modules don't appear in PEB.Ldr, so trust InjectDLL's
+  // returned base in that case; otherwise fall back to module enumeration.
+  uintptr_t loc =
+      manualMapBase ? manualMapBase : FindRemoteDLL(pid, STRINGIZE(RDOC_BASE_NAME) ".dll");
 
   CloseHandle(hProcess);
   hProcess = NULL;
