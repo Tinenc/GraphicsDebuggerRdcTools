@@ -1079,8 +1079,116 @@ static bool ThreadHijackCall(HANDLE hProcess, DWORD pid, uintptr_t funcAddr,
 //
 // Returns 0 if the host can't load the dll, the function is missing locally,
 // or the resolved canonical module isn't present in the target.
-static uintptr_t MM_ResolveViaHost(DWORD pid, const char *dllName, const char *funcName,
-                                   WORD ordinal)
+// Returns true if `dllName` is an API Set pseudo-DLL (api-ms-win-*,
+// ext-ms-win-*). API Sets are resolved by the loader's ApiSet schema and
+// only become visible inside a process *after* LdrInitializeThunk runs;
+// we must never try to LoadLibrary them inside a CREATE_SUSPENDED target.
+static bool MM_IsApiSetName(const char *dllName)
+{
+  if(!dllName)
+    return false;
+  size_t len = strlen(dllName);
+  if(len < 7)
+    return false;
+  return _strnicmp(dllName, "api-ms-", 7) == 0 || _strnicmp(dllName, "ext-ms-", 7) == 0;
+}
+
+// Build a lowercase basename copy for case-insensitive Toolhelp32 lookup.
+static rdcstr MM_BasenameLower(const char *dllName)
+{
+  rdcstr out;
+  for(const char *p = dllName; *p; p++)
+    out.push_back((char)tolower((unsigned char)*p));
+  return out;
+}
+
+// Ensure that a *real* (non-API-Set) dependency DLL is loaded inside the
+// target. CREATE_SUSPENDED targets only have the bare minimum loaded by the
+// kernel (ntdll, kernel32, kernelbase). Anything else our DLL imports from
+// (ws2_32, setupapi, version, ...) is not present, so MM_FindRemoteModuleBase
+// returns 0 and host-side RVA translation has no base to anchor against.
+//
+// At CREATE_SUSPENDED stage the loader is initialised enough that calling
+// LoadLibraryA on a *real* PE is safe; what was unsafe (and deadlocked
+// previously on SleepConditionVariableSRW) was LoadLibraryA on an API Set
+// schema name. That's why we filter those out and rely on host-side
+// resolution for them.
+//
+// Returns the resolved remote base, or 0 for API Sets and on failure.
+static uintptr_t MM_EnsureRemoteModule(HANDLE hProcess, DWORD pid, const char *dllName)
+{
+  if(MM_IsApiSetName(dllName))
+    return 0;
+
+  rdcstr lower = MM_BasenameLower(dllName);
+  uintptr_t base = MM_FindRemoteModuleBase(pid, lower.c_str());
+  if(base)
+    return base;
+
+  HMODULE hKernel = GetModuleHandleA("kernel32.dll");
+  if(!hKernel)
+    return 0;
+  FARPROC pLoadLibraryA = GetProcAddress(hKernel, "LoadLibraryA");
+  if(!pLoadLibraryA)
+    return 0;
+
+  size_t sz = strlen(dllName) + 1;
+  void *remoteName =
+      VirtualAllocEx(hProcess, NULL, sz, MEM_COMMIT | MEM_RESERVE, PAGE_READWRITE);
+  if(!remoteName)
+  {
+    RDCWARN("ManualMap: VirtualAllocEx(name='%s') failed (err %u)", dllName, GetLastError());
+    return 0;
+  }
+  SIZE_T w = 0;
+  if(!WriteProcessMemory(hProcess, remoteName, dllName, sz, &w) || w != sz)
+  {
+    VirtualFreeEx(hProcess, remoteName, 0, MEM_RELEASE);
+    return 0;
+  }
+
+  uint64_t hRet = 0;
+  rdcarray<uintptr_t> args;
+  args.push_back((uintptr_t)remoteName);
+  bool ok = ThreadHijackCall(hProcess, pid, (uintptr_t)pLoadLibraryA, args, &hRet,
+                             "MM-EnsureLoadLibraryA");
+  VirtualFreeEx(hProcess, remoteName, 0, MEM_RELEASE);
+
+  if(!ok)
+  {
+    RDCWARN("ManualMap: target LoadLibraryA('%s') hijack call failed", dllName);
+    return 0;
+  }
+  if(hRet == 0)
+  {
+    RDCWARN("ManualMap: target LoadLibraryA('%s') returned NULL", dllName);
+    return 0;
+  }
+
+  // Toolhelp32 needs a moment to see the freshly loaded module; the inner
+  // retry loop in MM_FindRemoteModuleBase already handles transient
+  // ERROR_BAD_LENGTH. As a belt-and-braces measure: if the snapshot doesn't
+  // see it yet, accept the HMODULE returned by LoadLibraryA itself (it's
+  // the module base in the target's address space).
+  base = MM_FindRemoteModuleBase(pid, lower.c_str());
+  if(!base)
+  {
+    RDCDEBUG("ManualMap: '%s' loaded at 0x%llx but Toolhelp32 missed it; using HMODULE directly",
+             dllName, (unsigned long long)hRet);
+    base = (uintptr_t)hRet;
+  }
+  return base;
+}
+
+// Resolve an import via the host's loader. The host process has the same
+// ApiSet schema and the same system DLLs as the target (same OS), so the
+// RVA we compute on the host side is identical to what the target sees
+// once the dependency DLL is loaded. `knownTargetBase`, if non-zero, lets
+// the caller skip a repeated Toolhelp32 lookup; otherwise we either look
+// it up or load the dep on demand via MM_EnsureRemoteModule.
+static uintptr_t MM_ResolveViaHost(HANDLE hProcess, DWORD pid, const char *dllName,
+                                   const char *funcName, WORD ordinal,
+                                   uintptr_t knownTargetBase)
 {
   HMODULE localM = LoadLibraryExA(dllName, NULL, LOAD_LIBRARY_SEARCH_SYSTEM32);
   if(!localM)
@@ -1093,6 +1201,9 @@ static uintptr_t MM_ResolveViaHost(DWORD pid, const char *dllName, const char *f
   if(!fp)
     return 0;
 
+  // GetModuleFileNameW gives us the *real* DLL on the host side once an API
+  // Set has been resolved (e.g. "api-ms-win-core-synch-l1-2-0.dll" ->
+  // "kernelbase.dll"). The target sees the same real DLL.
   wchar_t modPath[MAX_PATH] = {};
   if(!GetModuleFileNameW(localM, modPath, MAX_PATH))
     return 0;
@@ -1101,19 +1212,28 @@ static uintptr_t MM_ResolveViaHost(DWORD pid, const char *dllName, const char *f
 
   char basenameLower[MAX_PATH] = {};
   for(int i = 0; bn[i] != 0 && i < MAX_PATH - 1; i++)
-    basenameLower[i] = (char)towlower(bn[i]);
+    basenameLower[i] = (char)towlower((wchar_t)bn[i]);
 
-  uintptr_t targetBase = MM_FindRemoteModuleBase(pid, basenameLower);
+  uintptr_t targetBase = knownTargetBase;
+  if(!targetBase)
+    targetBase = MM_FindRemoteModuleBase(pid, basenameLower);
+
+  // If the resolved real DLL is not yet loaded in the target, load it. We
+  // only do this when the *original* import name was a real DLL (not an
+  // API Set) -- if the user asked us to resolve "api-ms-...", the target's
+  // loader has not initialised the API Set schema yet and any
+  // LoadLibrary("api-ms-...") inside the target would deadlock. The real
+  // DLL behind the API Set will be pulled in transitively by another import
+  // (kernel32 -> kernelbase) so we can leave it for that path.
+  if(!targetBase && !MM_IsApiSetName(dllName))
+    targetBase = MM_EnsureRemoteModule(hProcess, pid, basenameLower);
+
   if(!targetBase)
     return 0;
 
   uintptr_t rva = (uintptr_t)fp - (uintptr_t)localM;
   return targetBase + rva;
 }
-
-// (MM_RemoteLoadLibrary intentionally removed -- stage A must never call
-//  LoadLibrary inside a CREATE_SUSPENDED target. All dependency resolution
-//  goes through MM_ResolveViaHost, which works for API Sets too.)
 
 // Resolve a single import (by name or by ordinal) inside a remote module. Walks
 // the target's IMAGE_EXPORT_DIRECTORY directly via ReadProcessMemory, so we
@@ -1152,15 +1272,18 @@ static uintptr_t MM_ResolveForwarder(HANDLE hProcess, DWORD pid, const char *for
   bool isOrdinal = (funcPart[0] == '#');
   WORD ordinal = isOrdinal ? (WORD)atoi(funcPart + 1) : (WORD)0;
 
-  // 1) Host-side resolution (works for API Sets and all system DLLs).
-  uintptr_t addr =
-      MM_ResolveViaHost(pid, dllPart, isOrdinal ? NULL : funcPart, ordinal);
+  // 1) Host-side resolution (works for API Sets and all system DLLs). This
+  // will also LoadLibraryA the real underlying DLL inside the target if
+  // missing, so the RVA-anchored address resolves.
+  uintptr_t addr = MM_ResolveViaHost(hProcess, pid, dllPart, isOrdinal ? NULL : funcPart,
+                                     ordinal, 0);
   if(addr)
     return addr;
 
-  // 2) Fall back to target-side lookup + recursive export walk. Crucially we
-  // do *not* invoke MM_RemoteLoadLibrary here: CREATE_SUSPENDED targets can't
-  // safely call LoadLibrary.
+  // 2) Fall back to target-side lookup + recursive export walk. We do *not*
+  // try to LoadLibrary the DLL in the target here -- MM_ResolveViaHost
+  // already attempted that (for non-API-Set names) so if we got here, either
+  // the DLL is API-Set-only or the target rejected LoadLibrary.
   rdcstr lower = strlower(rdcstr(dllPart));
   uintptr_t mod = MM_FindRemoteModuleBase(pid, lower.c_str());
   if(!mod)
@@ -1298,13 +1421,14 @@ static bool MM_ResolveImports(HANDLE hProcess, DWORD pid, uint8_t *image,
   for(; desc->Name; desc++)
   {
     const char *dllName = (const char *)(image + desc->Name);
-    rdcstr lower = strlower(rdcstr(dllName));
 
-    // Look up the dependency in the target. For most system DLLs it's already
-    // loaded (kernel32, user32, dxgi, ...). For API Set names it won't be -
-    // we leave modBase=0 and let the per-function path fall through to host-
-    // side resolution.
-    uintptr_t modBase = MM_FindRemoteModuleBase(pid, lower.c_str());
+    // Look up the dependency in the target. For real DLLs not yet loaded
+    // (ws2_32, setupapi, version, ...) MM_EnsureRemoteModule will trigger
+    // a target-side LoadLibraryA via thread hijack. API Set names
+    // intentionally return 0 here -- their real backing DLL is reached
+    // through a different import (kernel32 -> kernelbase), so the
+    // per-function host-side path resolves them just fine.
+    uintptr_t modBase = MM_EnsureRemoteModule(hProcess, pid, dllName);
 
     DWORD nameThunkRva = desc->OriginalFirstThunk ? desc->OriginalFirstThunk : desc->FirstThunk;
     IMAGE_THUNK_DATA64 *nameThunk = (IMAGE_THUNK_DATA64 *)(image + nameThunkRva);
@@ -1332,12 +1456,14 @@ static bool MM_ResolveImports(HANDLE hProcess, DWORD pid, uint8_t *image,
       if(modBase)
         addr = MM_RemoteResolveExport(hProcess, pid, modBase, funcName, ord, 0);
 
-      // 2) Fall back to host-side resolution. Required for imports whose DLL
-      // is an API Set (no real module in the target) and also a safety net
-      // for any export that didn't resolve through the target's tables (e.g.
-      // mismatched OS minor versions).
+      // 2) Fall back to host-side resolution. Required for imports whose
+      // DLL is an API Set (no real module in the target under the schema
+      // name), and also a safety net for exports that don't resolve via
+      // the target tables (e.g. version skew during a Windows patch).
+      // Pass modBase as the known target base when we have it, to save
+      // per-import Toolhelp32 lookups.
       if(!addr)
-        addr = MM_ResolveViaHost(pid, dllName, funcName, ord);
+        addr = MM_ResolveViaHost(hProcess, pid, dllName, funcName, ord, modBase);
 
       if(!addr)
       {
