@@ -44,3 +44,7 @@
 # Specific files that should be left alone
 renderdoccmd/resource.h binary
 renderdoc/data/resource.h binary
+
+# Agent transcripts: raw Cursor jsonl logs (treat as binary so CRLF/whitespace
+# normalisation doesn't corrupt them).
+*.jsonl -text
