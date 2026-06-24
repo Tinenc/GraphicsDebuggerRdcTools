@@ -31,9 +31,11 @@ Directory，让 game 自己的 ntdll loader 帮我们 LoadLibrary。
 | 文件 | 说明 |
 |---|---|
 | `inject.ps1`                       | PowerShell 5.1+ 脚本，纯标准库，无外部依赖。在目标 PE32+ 镜像里追加一段 `.tnc` section 并改写 Import Directory。 |
+| `wuwa_patch.ps1`                   | 鸣潮专用 wrapper：patch / restore `Client-Win64-ShippingBase.dll`，自动备份/还原。 |
 | `poc_dll/TinecmaTool_PoC.cpp`      | 最小 DllMain，DLL_PROCESS_ATTACH 时往 `%TEMP%\TinecmaTool_PoC\<exe>_<pid>.log` 写 PEB.Ldr 当前已加载模块列表 — 验证 ntdll loader 真的在调我们而且能看到具体加载顺序。 |
 | `poc_dll/build.bat`                | 用 VS 2022 Community 的 cl.exe 编 PoC DLL（找不到 VS 时会自报错）。 |
 | `poc_dll/hello.cpp` + `build_hello.bat` | sanity-test 用的 hello world EXE，让我们能不动 system32 自测 patcher。 |
+| `launcher_patcher/`                | .NET 9 console 工具，使用 dnlib 改写 `launcher_main.dll` 的 `KRResCheckFlow.Exec` 方法体，让鸣潮 launcher 绕过本地 md5/size 校验。详见子目录 README。 |
 
 ## 快速上手 — sanity test
 
@@ -146,6 +148,57 @@ powershell -ExecutionPolicy Bypass -File .\inject.ps1 `
 6. **32-bit**：不支持（脚本里直接 throw）。
 7. **section header 满**：极少数手工裁过 PE 头部的 image 没空间塞新 section
    header。脚本会 throw 提示。
+
+## 鸣潮 launcher 校验绕过（patched launcher_main.dll）
+
+只 patch `Client-Win64-ShippingBase.dll` 还不够：鸣潮 launcher 启动时会通过
+WebView H5 前端发起 `kr_check_res_valid` IPC，C# 端走
+`KRResources.KRResCheckFlow.Exec()` 调 `KRFileChunkCheckTask` 算所有 game 文件
+的 md5/size，发现不匹配就弹"游戏文件缺失或损坏"。
+
+`launcher_patcher/` 是一个 .NET 9 console app，用 [dnlib](https://github.com/0xd4d/dnlib)
+加载 `launcher_main.dll`，把 `KRResCheckFlow.Exec(KRUpdateInfo, ResCheckProgressCallback, ResCheckResultCallback)`
+的方法体整段替换成：
+
+```csharp
+resultCallback?.Invoke(success: true, 0, "TinecmaTool: patched ...", null);
+```
+
+H5 前端永远收到 `success=true`，不会再触发"立即修复"下载，也不会弹窗。
+
+### 工作流
+
+```powershell
+cd util\pe_import_inject\launcher_patcher
+
+# 1. 把 launcher_main.dll 复制到本地（patcher 默认从
+#    ..\launcher_decompile\launcher_main.dll 读，你也可以传绝对路径）
+mkdir ..\launcher_decompile -Force | Out-Null
+cp 'C:\Wuthering Waves\<version>\launcher_main.dll' ..\launcher_decompile\
+
+# 2. 编译 & 跑 patcher，输出 launcher_main.patched.dll
+dotnet run -c Release
+# 或显式：
+# dotnet run -c Release -- '..\launcher_decompile\launcher_main.dll' '..\launcher_decompile\launcher_main.patched.dll'
+
+# 3. 安装到 launcher 目录（脚本会自动备份原 dll，等你确认效果）
+.\apply_launcher_patch.ps1 -LauncherDir 'C:\Wuthering Waves\<version>'
+
+# 失败回滚：
+.\apply_launcher_patch.ps1 -LauncherDir 'C:\Wuthering Waves\<version>' -Restore
+```
+
+### 限制
+
+1. `launcher_main.dll` 在 launcher 同目录的 `filechecklist.json` 里有 md5 + size
+   记录。如果 launcher_updater 启动时校验自身，patched dll 会触发 launcher 自更新
+   流程。这一块要看 `KRComponentUpdate.KRUpdateWorker` 怎么走，必要时也得 patch
+   `launcher_updater.dll` 跳过自检。
+2. launcher 的 Authenticode 签名会失效。.NET runtime 不强制托管 dll 签名，能加载，
+   但如果 launcher 自己用 `ProcessUtils.VerifyFileCertThumbsPrint` 校验 self
+   则要绕。
+3. 反编译产物（库洛专有 binary 和 263 个 .cs 文件）**绝不入仓库**，全部走
+   `.gitignore`；patcher 项目本身只依赖 dnlib NuGet。
 
 ## 这条线和 manualmap-inject / threadctx-inject 的关系
 
