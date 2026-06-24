@@ -1,0 +1,6 @@
+poc_dll/build/
+*.obj
+*.ilk
+*.pdb
+*.exp
+*.lib
