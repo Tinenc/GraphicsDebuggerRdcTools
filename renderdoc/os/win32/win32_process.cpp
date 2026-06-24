@@ -784,6 +784,37 @@ static bool MM_ReadFileBytes(const wchar_t *path, rdcarray<uint8_t> &out)
   return ok && read == (DWORD)size.QuadPart;
 }
 
+// Count loaded modules in the target. Used as a coarse signal of loader
+// initialisation progress: a CREATE_SUSPENDED process has ~3-5 modules at
+// the moment the kernel hands us the process; after LdrInitializeThunk
+// runs and pulls in all static imports the count is typically 20+.
+static DWORD MM_CountTargetModules(DWORD pid)
+{
+  HANDLE snap = INVALID_HANDLE_VALUE;
+  for(int r = 0; r < 10; r++)
+  {
+    snap = CreateToolhelp32Snapshot(TH32CS_SNAPMODULE, pid);
+    if(snap != INVALID_HANDLE_VALUE)
+      break;
+    if(GetLastError() != ERROR_BAD_LENGTH)
+      break;
+  }
+  if(snap == INVALID_HANDLE_VALUE)
+    return 0;
+  DWORD count = 0;
+  MODULEENTRY32W me = {};
+  me.dwSize = sizeof(me);
+  if(Module32FirstW(snap, &me))
+  {
+    do
+    {
+      count++;
+    } while(Module32NextW(snap, &me));
+  }
+  CloseHandle(snap);
+  return count;
+}
+
 // Find a loaded module in the target by case-insensitive basename match
 // (e.g. "kernel32.dll").
 static uintptr_t MM_FindRemoteModuleBase(DWORD pid, const char *basenameLower)
@@ -1079,6 +1110,89 @@ static bool ThreadHijackCall(HANDLE hProcess, DWORD pid, uintptr_t funcAddr,
 //
 // Returns 0 if the host can't load the dll, the function is missing locally,
 // or the resolved canonical module isn't present in the target.
+// Ensure the target's ntdll loader has initialised (LdrInitializeThunk has
+// run). For a process started with CREATE_SUSPENDED the kernel only sets
+// up the bare minimum -- ntdll/kernel32/kernelbase mapped + the main
+// thread parked at ntdll!LdrInitializeThunk -- and the loader's internal
+// state (loader lock, ApiSet schema cache, ModuleList linkage) is *not*
+// usable. If we thread-hijack-call kernel32!LoadLibraryA in that state,
+// LdrLoadDll deadlocks on the still-uninitialised loader lock; this is
+// exactly the 10-second timeout we see on launcher.exe and on rare
+// occasions on the game process itself.
+//
+// To get past that, we briefly release the main thread (one ResumeThread
+// pops the CREATE_SUSPENDED hold) and poll the target's module list. When
+// the count climbs noticeably the loader has run far enough that subsequent
+// LoadLibraryA calls from a hijack-trampoline are safe; we then re-suspend
+// the main thread and return so the caller's manual-map flow proceeds.
+//
+// This is only intended for the initial CREATE_SUSPENDED hold path. For
+// attached-already-running processes the module count is already high and
+// we no-op out immediately.
+static void MM_EnsureLoaderInitialised(DWORD pid)
+{
+  DWORD baseline = MM_CountTargetModules(pid);
+  // Heuristic threshold: a freshly CREATE_SUSPENDED target reports 3-5
+  // modules. Anything noticeably higher means LdrInitializeThunk already
+  // pulled the static imports in. Bail out fast in that case.
+  if(baseline >= 12)
+    return;
+
+  HANDLE hMain = OpenInjectionThread(pid);
+  if(!hMain)
+  {
+    RDCWARN("ManualMap: loader-init pre-wait: no openable thread for pid %u", pid);
+    return;
+  }
+
+  // ResumeThread returns the previous suspend count. We only want to
+  // release the kernel's CREATE_SUSPENDED hold (suspendCount=1 -> 0).
+  // If it was already 0 we accidentally over-resumed; correct by
+  // suspending once.
+  DWORD prev = ResumeThread(hMain);
+  if(prev == (DWORD)-1)
+  {
+    RDCWARN("ManualMap: loader-init pre-wait: ResumeThread failed (err %u)", GetLastError());
+    CloseHandle(hMain);
+    return;
+  }
+  if(prev == 0)
+  {
+    SuspendThread(hMain);
+    CloseHandle(hMain);
+    return;
+  }
+
+  bool sawProgress = false;
+  for(int i = 0; i < 80; i++)    // up to ~4s total
+  {
+    Sleep(50);
+    DWORD now = MM_CountTargetModules(pid);
+    // Either we've crossed a sane absolute threshold or grown noticeably
+    // from the CREATE_SUSPENDED baseline.
+    if(now >= 15 || now >= baseline + 8)
+    {
+      sawProgress = true;
+      RDCDEBUG("ManualMap: loader init complete (modules %u -> %u, waited %d ms)", baseline, now,
+               (i + 1) * 50);
+      break;
+    }
+  }
+  if(!sawProgress)
+  {
+    DWORD now = MM_CountTargetModules(pid);
+    RDCWARN("ManualMap: loader init wait timed out (modules %u -> %u); continuing anyway",
+            baseline, now);
+  }
+
+  // Re-suspend so the rest of the manual map sees a stable target. The
+  // caller's ThreadHijackCall path will pop this suspend back to running
+  // when it needs to dispatch our trampoline.
+  if(SuspendThread(hMain) == (DWORD)-1)
+    RDCWARN("ManualMap: loader-init pre-wait: SuspendThread failed (err %u)", GetLastError());
+  CloseHandle(hMain);
+}
+
 // Returns true if `dllName` is an API Set pseudo-DLL (api-ms-win-*,
 // ext-ms-win-*). API Sets are resolved by the loader's ApiSet schema and
 // only become visible inside a process *after* LdrInitializeThunk runs;
@@ -1661,6 +1775,13 @@ static void MM_RegisterExceptionTable(HANDLE hProcess, DWORD pid, uintptr_t remo
 // (the caller should fall back to the thread-hijack LoadLibrary path).
 static uintptr_t InjectDLL_ManualMap(HANDLE hProcess, DWORD pid, const rdcwstr &libName)
 {
+  // Before touching the target with any thread-hijack call, make sure its
+  // loader has actually run. Without this, manual-mapping into a process
+  // that's still parked at LdrInitializeThunk (CREATE_SUSPENDED) deadlocks
+  // on the loader lock the first time we ask it to LoadLibraryA a missing
+  // dependency such as WS2_32.dll or SETUPAPI.dll.
+  MM_EnsureLoaderInitialised(pid);
+
   rdcarray<uint8_t> fileBytes;
   if(!MM_ReadFileBytes(libName.c_str(), fileBytes))
   {
