@@ -272,6 +272,20 @@ extern "C" __declspec(dllexport) void __cdecl INTERNAL_ApplyEnvMods(void *ignore
 #define TINECMATOOL_USE_THREADHIJACK_INJECT 1
 #endif
 
+static bool ThreadHijackEnabled()
+{
+#if !TINECMATOOL_USE_THREADHIJACK_INJECT
+  return false;
+#else
+  wchar_t buf[8] = {};
+  DWORD n = GetEnvironmentVariableW(L"TINECMATOOL_DISABLE_THREADHIJACK", buf,
+                                    (DWORD)(sizeof(buf) / sizeof(buf[0])));
+  if(n > 0 && (buf[0] == L'1' || buf[0] == L'y' || buf[0] == L'Y'))
+    return false;
+  return true;
+#endif
+}
+
 // ===========================================================================
 // TinecmaTool: manual-mapped DLL injection (ACE-Base / unsigned-DLL bypass).
 // Some kernel-level anti-cheats (e.g. ACE-Base used by Wuthering Waves) hook
@@ -296,8 +310,30 @@ extern "C" __declspec(dllexport) void __cdecl INTERNAL_ApplyEnvMods(void *ignore
 // ===========================================================================
 
 #ifndef TINECMATOOL_USE_MANUALMAP_INJECT
+// Keep the manual-map implementation compiled in, but do not run it unless the
+// operator explicitly opts in via TINECMATOOL_ENABLE_MANUALMAP=1 (smoke tests
+// currently fail with manual-map; see TINECMATOOL_NARAKA_INJECT.md).
 #define TINECMATOOL_USE_MANUALMAP_INJECT 1
 #endif
+
+// Runtime gate (checked inside InjectDLL). Default OFF.
+//   TINECMATOOL_ENABLE_MANUALMAP=1  -> allow
+//   TINECMATOOL_DISABLE_MANUALMAP=1 -> force off (wins)
+static bool ManualMapEnabled()
+{
+  wchar_t buf[8] = {};
+  DWORD n = GetEnvironmentVariableW(L"TINECMATOOL_DISABLE_MANUALMAP", buf,
+                                    (DWORD)(sizeof(buf) / sizeof(buf[0])));
+  if(n > 0 && (buf[0] == L'1' || buf[0] == L'y' || buf[0] == L'Y'))
+    return false;
+
+  n = GetEnvironmentVariableW(L"TINECMATOOL_ENABLE_MANUALMAP", buf,
+                              (DWORD)(sizeof(buf) / sizeof(buf[0])));
+  if(n > 0 && (buf[0] == L'1' || buf[0] == L'y' || buf[0] == L'Y'))
+    return true;
+
+  return false;
+}
 
 namespace
 {
@@ -691,8 +727,12 @@ static bool InjectDLL_ThreadHijack(HANDLE hProcess, DWORD pid, rdcwstr libName)
     return false;
   }
 
-  // No done-flag: InjectDLL's success is verified externally via FindRemoteDLL.
-  bool ok = ThreadHijackInvoke(hProcess, pid, loadLib, remoteDllPath, NULL, 0, "LoadLibraryW");
+  // Use a done-flag so we don't free the remote path / shellcode while a blocked
+  // GUI thread (GetMessage etc.) has not yet executed the hijacked LoadLibraryW.
+  // The 1-byte readback into `dummy` is unused.
+  uint8_t dummy = 0;
+  bool ok = ThreadHijackInvoke(hProcess, pid, loadLib, remoteDllPath, &dummy, sizeof(dummy),
+                               "LoadLibraryW");
 
   VirtualFreeEx(hProcess, remoteDllPath, 0, MEM_RELEASE);
   return ok;
@@ -1935,6 +1975,9 @@ static uintptr_t InjectDLL_ManualMap(HANDLE, DWORD, const rdcwstr &)
 
 }    // anonymous namespace
 
+// Forward decl - defined below. Used by InjectDLL to verify thread-hijack LoadLibrary.
+uintptr_t FindRemoteDLL(DWORD pid, rdcstr libName);
+
 // Returns the remote module base when the manual-map path is taken (the
 // module is *not* present in PEB.Ldr in that case, so FindRemoteDLL cannot
 // see it; callers must prefer the return value over FindRemoteDLL). Returns 0
@@ -1945,6 +1988,7 @@ uintptr_t InjectDLL(HANDLE hProcess, rdcwstr libName)
   DWORD pid = GetProcessId(hProcess);
 
 #if TINECMATOOL_USE_MANUALMAP_INJECT
+  if(ManualMapEnabled())
   {
     uintptr_t mappedBase = InjectDLL_ManualMap(hProcess, pid, libName);
     if(mappedBase != 0)
@@ -1952,13 +1996,45 @@ uintptr_t InjectDLL(HANDLE hProcess, rdcwstr libName)
     RDCWARN("Manual-map inject failed for '%ls'; falling back to thread-hijack LoadLibrary",
             libName.c_str());
   }
+  else
+  {
+    RDCWARN("Manual-map inject disabled via TINECMATOOL_DISABLE_MANUALMAP; skipping");
+  }
 #endif
 
 #if TINECMATOOL_USE_THREADHIJACK_INJECT
-  if(InjectDLL_ThreadHijack(hProcess, pid, libName))
-    return 0;
-  RDCWARN("Thread-hijack DLL inject failed; falling back to CreateRemoteThread for '%ls'",
-          libName.c_str());
+  if(ThreadHijackEnabled())
+  {
+    if(InjectDLL_ThreadHijack(hProcess, pid, libName))
+    {
+      // Confirm the module really landed. Hijacking a blocked GUI thread can time
+      // out the done-flag path as failure, but if it returned true and the module
+      // still isn't visible, fall through to CreateRemoteThread rather than
+      // reporting a false success to InjectIntoProcess.
+      rdcstr baseName = get_basename(StringFormat::Wide2UTF8(libName));
+      uintptr_t found = 0;
+      for(DWORD waited = 0; waited < kHijackTimeoutMs; waited += kHijackPollMs)
+      {
+        found = FindRemoteDLL(pid, baseName);
+        if(found != 0)
+          return 0;
+        Sleep(kHijackPollMs);
+      }
+      RDCWARN(
+          "Thread-hijack claimed success but '%s' not enumerated in PID %u; falling back to "
+          "CreateRemoteThread",
+          baseName.c_str(), pid);
+    }
+    else
+    {
+      RDCWARN("Thread-hijack DLL inject failed; falling back to CreateRemoteThread for '%ls'",
+              libName.c_str());
+    }
+  }
+  else
+  {
+    RDCWARN("Thread-hijack inject disabled via TINECMATOOL_DISABLE_THREADHIJACK; skipping");
+  }
 #endif
 
   wchar_t dllPath[MAX_PATH + 1] = {0};

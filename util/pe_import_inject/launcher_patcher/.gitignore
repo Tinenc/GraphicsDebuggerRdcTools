@@ -1,0 +1,17 @@
+bin/
+obj/
+
+# Decompiled / patched launcher_main artifacts. These are derived from
+# Kuro Games proprietary binaries and must NEVER be checked in.
+launcher_main*.dll
+launcher_main*.deps.json
+launcher_main*.runtimeconfig.json
+launcher_updater*.dll
+launcher_updater*.deps.json
+launcher_updater*.runtimeconfig.json
+*.patched.dll
+*.tinecmatool.bak
+
+# ILSpy decompilation outputs (any folder under our workspace named
+# launcher_decompile or KR* projects under it).
+../launcher_decompile/

@@ -324,37 +324,145 @@ private:
     return ret;
   }
 
+  // Returns true if `hay` (already lowercased) mentions any known-bad child we
+  // must never inject into. Covers self-recursion, Wuwa launcher, and Naraka
+  // Mobile / NetEase NEAC helper processes under F:\NarakaMobile.
+  static bool IsInjectBlacklisted(const rdcstr &hay)
+  {
+    if(hay.empty())
+      return false;
+
+    static const char *const kBlacklist[] = {
+        // self / UI
+        "tinecmatoolcmd.exe",
+        "qtinecmatool.exe",
+        // Wuwa (Endfield)
+        "platformprocess.exe",
+        // Naraka Mobile launcher / intermediate starters
+        "narakamobilelauncher.exe",
+        "startgame_l22.exe",
+        // NetEase NEAC / CrashSight helpers
+        "yjneacclient.exe",
+        "unitycrashhandler64.exe",
+        "unicrashreporter.exe",
+        // patch / update / install helpers
+        "narakam_patcher.exe",
+        "narakam_updater.exe",
+        "elevate.exe",
+        "uninst.exe",
+        "p2pupdater.exe",
+        "asar_replacer.exe",
+        "xdelta3.exe",
+        // media / webview helpers (not the D3D game process)
+        "ffmpeg.exe",
+        "ccmini.exe",
+        "ccvideoplayer.exe",
+        "mliveccplayerapp.exe",
+        "webview_support_browser.exe",
+    };
+
+    for(const char *b : kBlacklist)
+    {
+      if(hay.contains(b))
+        return true;
+    }
+
+    // CEF helper named simply "render.exe" - only skip when under Naraka's
+    // webviewsupport tree to avoid false positives on unrelated apps.
+    if(hay.contains("webviewsupport") && hay.contains("render.exe"))
+      return true;
+
+    return false;
+  }
+
+  // Optional env-driven filters (read once, cached):
+  //   TINECMATOOL_CHILD_WHITELIST  = semicolon-separated basenames that ARE
+  //                                  allowed (e.g. "narakabladepointmobile.exe")
+  //   TINECMATOOL_CHILD_PATH_PREFIX = only inject if the child path/cmdline
+  //                                  contains this substring (e.g.
+  //                                  "f:\\narakamobile\\game")
+  // Both are optional; empty means "no extra filter".
+  static void GetChildInjectFilters(rdcstr &whitelist, rdcstr &pathPrefix)
+  {
+    static bool s_inited = false;
+    static rdcstr s_whitelist;
+    static rdcstr s_pathPrefix;
+    if(!s_inited)
+    {
+      s_inited = true;
+      wchar_t buf[1024] = {};
+      DWORD n = GetEnvironmentVariableW(L"TINECMATOOL_CHILD_WHITELIST", buf,
+                                        (DWORD)(sizeof(buf) / sizeof(buf[0])));
+      if(n > 0 && n < sizeof(buf) / sizeof(buf[0]))
+        s_whitelist = strlower(StringFormat::Wide2UTF8(buf));
+
+      n = GetEnvironmentVariableW(L"TINECMATOOL_CHILD_PATH_PREFIX", buf,
+                                  (DWORD)(sizeof(buf) / sizeof(buf[0])));
+      if(n > 0 && n < sizeof(buf) / sizeof(buf[0]))
+        s_pathPrefix = strlower(StringFormat::Wide2UTF8(buf));
+    }
+    whitelist = s_whitelist;
+    pathPrefix = s_pathPrefix;
+  }
+
+  static bool PassesOptionalChildFilters(const rdcstr &hay)
+  {
+    rdcstr whitelist, pathPrefix;
+    GetChildInjectFilters(whitelist, pathPrefix);
+
+    if(!pathPrefix.empty() && !hay.contains(pathPrefix))
+      return false;
+
+    if(!whitelist.empty())
+    {
+      // Whitelist is a semicolon-separated list of substrings (usually basenames).
+      bool matched = false;
+      int32_t start = 0;
+      while(start <= (int32_t)whitelist.length())
+      {
+        int32_t end = whitelist.find(';', start);
+        if(end < 0)
+          end = (int32_t)whitelist.length();
+        rdcstr token = whitelist.substr((size_t)start, (size_t)(end - start)).trimmed();
+        if(!token.empty() && hay.contains(token))
+        {
+          matched = true;
+          break;
+        }
+        if(end >= (int32_t)whitelist.length())
+          break;
+        start = end + 1;
+      }
+      if(!matched)
+        return false;
+    }
+
+    return true;
+  }
+
   static bool ShouldInject(LPCWSTR lpApplicationName, LPCWSTR lpCommandLine)
   {
     if(!RenderDoc::Inst().GetCaptureOptions().hookIntoChildren)
       return false;
 
-    bool inject = true;
-
-    // sanity check to make sure we're not going to go into an infinity loop injecting into
-    // ourselves, and skip known-incompatible child processes (e.g. Qt WebEngine).
+    rdcstr app, cmd;
     if(lpApplicationName)
-    {
-      rdcstr app = strlower(StringFormat::Wide2UTF8(lpApplicationName));
-
-      if(app.contains("tinecmatoolcmd.exe") || app.contains("qtinecmatool.exe") ||
-         app.contains("platformprocess.exe"))
-      {
-        inject = false;
-      }
-    }
+      app = strlower(StringFormat::Wide2UTF8(lpApplicationName));
     if(lpCommandLine)
-    {
-      rdcstr cmd = strlower(StringFormat::Wide2UTF8(lpCommandLine));
+      cmd = strlower(StringFormat::Wide2UTF8(lpCommandLine));
 
-      if(cmd.contains("tinecmatoolcmd.exe") || cmd.contains("qtinecmatool.exe") ||
-         cmd.contains("platformprocess.exe"))
-      {
-        inject = false;
-      }
-    }
+    // Prefer the richer of the two strings for path/whitelist checks.
+    rdcstr hay = !app.empty() ? app : cmd;
+    if(!cmd.empty() && cmd.length() > hay.length())
+      hay = cmd;
+    // Also OR-check blacklist against both independently.
+    if(IsInjectBlacklisted(app) || IsInjectBlacklisted(cmd))
+      return false;
 
-    return inject;
+    if(!PassesOptionalChildFilters(hay))
+      return false;
+
+    return true;
   }
 
   static bool ShouldInject(LPCSTR lpApplicationName, LPCSTR lpCommandLine)

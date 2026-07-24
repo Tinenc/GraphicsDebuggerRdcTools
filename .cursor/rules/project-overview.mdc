@@ -8,8 +8,11 @@ alwaysApply: true
 - **上游 fork**: https://github.com/butteruni/renderdoc.git，`Endfield` 分支（基于 baldurk/renderdoc v1.x）
 - **本仓库远程**: https://github.com/Tinenc/GraphicsDebuggerRdcTools.git
 - **分支布局**:
-  - `endfield/import` —— 品牌统一基线（rendertest/gfxdiag → `TinecmaTool`），其它逻辑等同上游 butteruni/renderdoc Endfield
-  - `tinecmatool/threadctx-inject` —— 在基线之上把 `CreateRemoteThread` 注入换成 `SetThreadContext` 线程劫持（绕过 CrashSight）；编译宏 `TINECMATOOL_USE_THREADHIJACK_INJECT`（默认 1）控制，失败自动 fallback 到旧路径。详见 [`TINECMATOOL_THREADCTX_INJECT.md`](../../TINECMATOOL_THREADCTX_INJECT.md)
+  - `endfield/import` —— 品牌统一基线（rendertest/gfxdiag → `TinecmaTool`）
+  - `tinecmatool/threadctx-inject` —— `CreateRemoteThread` → `SetThreadContext` 线程劫持
+  - `tinecmatool/manualmap-inject` —— 在 threadctx 之上加 manual-map PE loader（不进 PEB.Ldr）
+  - `tinecmatool/pe-import-inject` —— 磁盘改 PE Import Table + launcher patcher
+  - `tinecmatool/naraka-inject` —— **当前活动**：面向 `F:\NarakaMobile`（永劫手游 PC）的合集分支 = manualmap + Naraka 子进程黑名单/白名单/路径前缀 + `util/pe_import_inject/naraka_*.ps1`。详见 [`TINECMATOOL_NARAKA_INJECT.md`](../../TINECMATOOL_NARAKA_INJECT.md)
 - **本地路径**: `c:\Program Files\GraphicsDebuggerRdcTools`（路径含空格，PowerShell 中需用双引号 `"c:\Program Files\..."`）
 - **解决方案**: `renderdoc.sln`
 - **Endfield 用途**: 修改 RenderDoc hook 逻辑，避免注入到 `platformprocess.exe`（鸣潮 Wuwa 启动器）等进程，便于对该类游戏抓帧
