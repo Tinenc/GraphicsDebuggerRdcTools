@@ -36,10 +36,14 @@ UnityCrashHandler64.exe / ...    <- 崩溃/直播/webview 辅助（不要注入�
 
 `tinecmatoolcmd.exe` / `qtinecmatool.exe` / `platformprocess.exe`（鸣潮）以及：
 
-`narakamobilelauncher.exe`、`startgame_l22.exe`、`yjneacclient.exe`、
+`narakamobilelauncher.exe`、`yjneacclient.exe`、
 `unitycrashhandler64.exe`、`unicrashreporter.exe`、`narakam_patcher.exe`、
 `narakam_updater.exe`、`ffmpeg.exe`、`ccmini.exe`、直播/webview 辅助、
 updater/elevate/uninst 等。
+
+**不要**把 `startgame_l22.exe` 放进黑名单：登录器链路是
+`Launcher → StartGame_l22 → NarakaBladepointMobile`，必须允许注入
+StartGame，才能把 hook 传到真游戏；否则会出现 Connected 但 **API: None**。
 
 `webviewsupport\...\render.exe` 仅在路径含 `webviewsupport` 时才跳过。
 
@@ -48,7 +52,7 @@ updater/elevate/uninst 等。
 在启动 `qTinecmaTool.exe` **之前**设置：
 
 ```powershell
-$env:TINECMATOOL_CHILD_WHITELIST = "narakabladepointmobile.exe"
+$env:TINECMATOOL_CHILD_WHITELIST = "narakabladepointmobile.exe;startgame_l22.exe"
 $env:TINECMATOOL_CHILD_PATH_PREFIX = "f:\narakamobile\game"
 ```
 

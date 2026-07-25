@@ -338,9 +338,12 @@ private:
         "qtinecmatool.exe",
         // Wuwa (Endfield)
         "platformprocess.exe",
-        // Naraka Mobile launcher / intermediate starters
+        // Naraka Mobile Electron launcher only. Do NOT blacklist StartGame_l22:
+        // the launcher CreateProcess chain is
+        //   NarakaMobileLauncher -> StartGame_l22 -> NarakaBladepointMobile
+        // and hookIntoChildren must be allowed to follow StartGame into the
+        // real game, otherwise the game starts unhooked (API: None).
         "narakamobilelauncher.exe",
-        "startgame_l22.exe",
         // NetEase NEAC / CrashSight helpers
         "yjneacclient.exe",
         "unitycrashhandler64.exe",

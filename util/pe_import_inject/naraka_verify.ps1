@@ -19,7 +19,7 @@ Write-Host "=== Naraka inject self-verify ==="
 # --- 1. Mirror of sys_win32_hooks.cpp blacklist (keep in sync) ---
 $blacklist = @(
   "tinecmatoolcmd.exe", "qtinecmatool.exe", "platformprocess.exe",
-  "narakamobilelauncher.exe", "startgame_l22.exe",
+  "narakamobilelauncher.exe",
   "yjneacclient.exe", "unitycrashhandler64.exe", "unicrashreporter.exe",
   "narakam_patcher.exe", "narakam_updater.exe",
   "elevate.exe", "uninst.exe", "p2pupdater.exe", "asar_replacer.exe", "xdelta3.exe",
@@ -39,7 +39,7 @@ function Test-Blacklisted([string]$hay) {
 $cases = @(
   @{ hay = "F:\NarakaMobile\game\NarakaBladepointMobile.exe"; expect = $false; name = "game exe allowed" },
   @{ hay = "F:\NarakaMobile\NGP\NarakaMobileLauncher.exe"; expect = $true; name = "launcher blocked" },
-  @{ hay = "F:\NarakaMobile\game\StartGame_l22.exe"; expect = $true; name = "startgame blocked" },
+  @{ hay = "F:\NarakaMobile\game\StartGame_l22.exe"; expect = $false; name = "startgame allowed (chain inject)" },
   @{ hay = "F:\NarakaMobile\game\YJNeacClient.exe"; expect = $true; name = "NEAC client blocked" },
   @{ hay = "C:\Tools\qTinecmaTool.exe"; expect = $true; name = "UI self blocked" },
   @{ hay = "F:\NarakaMobile\game\webviewsupport.cef904430\render.exe"; expect = $true; name = "cef render blocked" },
@@ -53,18 +53,25 @@ foreach ($c in $cases) {
 }
 
 # whitelist filter mimic
-$wl = "narakabladepointmobile.exe"
+$wl = "narakabladepointmobile.exe;startgame_l22.exe"
 $pathPrefix = "f:\narakamobile\game"
 function Pass-Filters([string]$hay) {
   $h = $hay.ToLowerInvariant()
   if (-not $h.Contains($pathPrefix)) { return $false }
-  if (-not $h.Contains($wl)) { return $false }
+  $tokens = $wl.Split(';') | ForEach-Object { $_.Trim() } | Where-Object { $_ }
+  $matched = $false
+  foreach ($t in $tokens) { if ($h.Contains($t)) { $matched = $true; break } }
+  if (-not $matched) { return $false }
   if (Test-Blacklisted $h) { return $false }
   return $true
 }
 if (Pass-Filters "F:\NarakaMobile\game\NarakaBladepointMobile.exe") {
   Ok "whitelist+pathPrefix allows game"
 } else { Bad "whitelist+pathPrefix should allow game" }
+
+if (Pass-Filters "F:\NarakaMobile\game\StartGame_l22.exe") {
+  Ok "whitelist+pathPrefix allows startgame"
+} else { Bad "whitelist+pathPrefix should allow startgame" }
 
 if (-not (Pass-Filters "F:\NarakaMobile\game\ffmpeg.exe")) {
   Ok "whitelist+pathPrefix blocks ffmpeg"
