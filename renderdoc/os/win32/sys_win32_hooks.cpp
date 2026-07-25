@@ -327,6 +327,13 @@ private:
   // Returns true if `hay` (already lowercased) mentions any known-bad child we
   // must never inject into. Covers self-recursion, Wuwa launcher, and Naraka
   // Mobile / NetEase NEAC helper processes under F:\NarakaMobile.
+  //
+  // IMPORTANT (Naraka): do NOT inject StartGame_l22 / Electron helpers from a
+  // hooked NarakaMobileLauncher. Thread-hijack into those children stalls
+  // CreateProcess for ~10s then fails with VirtualAllocEx ACCESS_DENIED, and
+  // the launcher never brings the real game up. Early capture of the real game
+  // must use Global Hook (whitelist game only) or PE import patch - not
+  // Launch Application on the launcher with hookIntoChildren.
   static bool IsInjectBlacklisted(const rdcstr &hay)
   {
     if(hay.empty())
@@ -338,13 +345,9 @@ private:
         "qtinecmatool.exe",
         // Wuwa (Endfield)
         "platformprocess.exe",
-        // Naraka Mobile Electron launcher only. Do NOT blacklist StartGame_l22:
-        // the launcher CreateProcess chain is
-        //   NarakaMobileLauncher -> StartGame_l22 -> NarakaBladepointMobile
-        // and hookIntoChildren must be allowed to follow StartGame into the
-        // real game, otherwise the game starts unhooked (API: None).
+        // Naraka Mobile launcher / intermediate starters / AC
         "narakamobilelauncher.exe",
-        // NetEase NEAC / CrashSight helpers
+        "startgame_l22.exe",
         "yjneacclient.exe",
         "unitycrashhandler64.exe",
         "unicrashreporter.exe",
@@ -373,6 +376,13 @@ private:
     // CEF helper named simply "render.exe" - only skip when under Naraka's
     // webviewsupport tree to avoid false positives on unrelated apps.
     if(hay.contains("webviewsupport") && hay.contains("render.exe"))
+      return true;
+
+    // Under the Naraka install tree, only ever follow the real game exe as a
+    // CreateProcess child. Anything else (Electron helpers, updaters, etc.)
+    // is skipped so the login flow is not stalled by failed inject attempts.
+    if((hay.contains("narakamobile") || hay.contains("narakabladepoint")) &&
+       !hay.contains("narakabladepointmobile.exe"))
       return true;
 
     return false;

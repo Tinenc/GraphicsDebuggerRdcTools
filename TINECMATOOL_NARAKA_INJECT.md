@@ -36,47 +36,55 @@ UnityCrashHandler64.exe / ...    <- 崩溃/直播/webview 辅助（不要注入�
 
 `tinecmatoolcmd.exe` / `qtinecmatool.exe` / `platformprocess.exe`（鸣潮）以及：
 
-`narakamobilelauncher.exe`、`yjneacclient.exe`、
+`narakamobilelauncher.exe`、`startgame_l22.exe`、`yjneacclient.exe`、
 `unitycrashhandler64.exe`、`unicrashreporter.exe`、`narakam_patcher.exe`、
 `narakam_updater.exe`、`ffmpeg.exe`、`ccmini.exe`、直播/webview 辅助、
 updater/elevate/uninst 等。
 
-**不要**把 `startgame_l22.exe` 放进黑名单：登录器链路是
-`Launcher → StartGame_l22 → NarakaBladepointMobile`，必须允许注入
-StartGame，才能把 hook 传到真游戏；否则会出现 Connected 但 **API: None**。
+另外：路径/命令行里出现 `narakamobile` / `narakabladepoint` 时，**只允许**
+子进程名含 `narakabladepointmobile.exe` 的注入；其它子进程一律跳过。
 
-`webviewsupport\...\render.exe` 仅在路径含 `webviewsupport` 时才跳过。
+原因：对登录器子进程做 Thread-hijack 会卡住 CreateProcess ~10 秒并
+`VirtualAllocEx` ACCESS_DENIED，登录器再也拉不起真游戏。
 
-### 1.2 推荐环境变量（Global Hook / 经启动器抓帧时）
+**因此不要用 Launch Application 启动登录器来抓帧。** 正确做法：
 
-在启动 `qTinecmaTool.exe` **之前**设置：
+1. 登录器在资源管理器里**正常双击打开**（不要经 TinecmaTool Launch）
+2. `qTinecmaTool` 开 **Global Hook**，并设：
 
 ```powershell
-$env:TINECMATOOL_CHILD_WHITELIST = "narakabladepointmobile.exe;startgame_l22.exe"
+$env:TINECMATOOL_CHILD_WHITELIST = "narakabladepointmobile.exe"
 $env:TINECMATOOL_CHILD_PATH_PREFIX = "f:\narakamobile\game"
 ```
 
-直接 Launch Application 指向 `NarakaBladepointMobile.exe` 时，不经过 `ShouldInject`，这两项可省略。
-
+3. 或用 `naraka_patch.ps1` 改游戏 exe 后再用登录器（测完 restore）
 ---
 
-## 2. 推荐抓帧流程（策略 1+2）
+## 2. 推荐抓帧流程（必须用登录器时）
 
-1. 编译本分支（VS2022 -> `renderdoc.sln` -> x64 / Development）
-2. **优先**：File -> Launch Application
-   - Executable: `F:\NarakaMobile\game\NarakaBladepointMobile.exe`
-   - Working Dir: `F:\NarakaMobile\game`
-3. 若必须经启动器登录：开 Global Hook + 上面两个 env，再开
-   `F:\NarakaMobile\NGP\NarakaMobileLauncher.exe`
-4. 默认注入链路：
-   1. SetThreadContext + LoadLibraryW
-   2. 失败 -> CreateRemoteThread
-   3. Manual-map **默认关**（见 §4）
+**不要**用 File → Launch Application 启动 `NarakaMobileLauncher.exe`（会卡死启动链）。
 
-| 环境变量 / 宏 | 作用 |
+1. 关掉所有 Naraka / Tinecma 相关进程
+2. 管理员 PowerShell：
+
+```powershell
+$env:TINECMATOOL_CHILD_WHITELIST = "narakabladepointmobile.exe"
+$env:TINECMATOOL_CHILD_PATH_PREFIX = "f:\narakamobile\game"
+& "C:\Program Files\GraphicsDebuggerRdcTools\x64\Development\qTinecmaTool.exe"
+```
+
+3. 在 UI 里开启 **Global Hook**（管理员）
+4. **资源管理器双击**打开 `F:\NarakaMobile\NGP\NarakaMobileLauncher.exe` 登录
+5. 等 Status 里出现 `NarakaBladepointMobile` 且 **API 不是 None**，再 F12
+
+若 Global Hook 仍 API: None → 用 §3 PE patch。
+
+默认注入链路：Thread-hijack → CreateRemoteThread；Manual-map 默认关。
+
+| 环境变量 | 作用 |
 |---|---|
 | `TINECMATOOL_DISABLE_THREADHIJACK=1` | 跳过线程劫持，直接 CRT |
-| `TINECMATOOL_ENABLE_MANUALMAP=1` | 运行时启用 manual-map（默认关；当前 smoke 会 FAIL） |
+| `TINECMATOOL_ENABLE_MANUALMAP=1` | 启用 manual-map（实验性） |
 | `TINECMATOOL_DISABLE_MANUALMAP=1` | 强制关 manual-map |
 
 ---
