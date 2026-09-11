@@ -44,3 +44,7 @@
 # Specific files that should be left alone
 renderdoccmd/resource.h binary
 renderdoc/data/resource.h binary
+
+# Cursor agent chat transcripts
+agent-chats/*.jsonl binary
+
