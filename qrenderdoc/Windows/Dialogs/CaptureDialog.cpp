@@ -829,7 +829,14 @@ void CaptureDialog::on_toggleGlobal_clicked()
 
     QString capturefile = m_Ctx.TempCaptureFilename(QFileInfo(exe).baseName());
 
-    ResultDetails success = RENDERDOC_StartGlobalHook(exe, capturefile, Settings().options);
+    // MuMuPlayer is only a launcher. The graphics device lives in the
+    // separately spawned MuMuVMMHeadless.exe process, so match the latter for
+    // the shim instead of the executable selected in the UI.
+    QString hookMatch = exe;
+    if(QFileInfo(exe).fileName().compare(lit("MuMuPlayer.exe"), Qt::CaseInsensitive) == 0)
+      hookMatch = lit("MuMuVMMHeadless.exe");
+
+    ResultDetails success = RENDERDOC_StartGlobalHook(hookMatch, capturefile, Settings().options);
 
     if(!success.OK())
     {

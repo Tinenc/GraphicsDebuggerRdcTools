@@ -37,6 +37,19 @@
 #include <shlobj.h>
 #include <tlhelp32.h>
 
+#ifndef RDOC_BASE_NAME
+#define RDOC_BASE_NAME renderdoc
+#endif
+#ifndef STRINGIZE2
+#define STRINGIZE2(value) #value
+#define STRINGIZE(value) STRINGIZE2(value)
+#endif
+
+// Avoid including shellapi.h here: it defines ShellExecute as a macro and
+// breaks the IShellDispatch2::ShellExecute COM method below.
+extern "C" __declspec(dllimport) LPWSTR *WINAPI CommandLineToArgvW(LPCWSTR lpCmdLine,
+                                                                      int *pNumArgs);
+
 static std::string conv(const std::wstring &str)
 {
   std::string ret;
@@ -815,7 +828,7 @@ public:
     wchar_t rdocpath[1024];
 
     // fetch path to our matching renderdoc.dll
-    HMODULE rdoc = GetModuleHandleA("renderdoc.dll");
+    HMODULE rdoc = GetModuleHandleA(STRINGIZE(RDOC_BASE_NAME) ".dll");
 
     if(rdoc == NULL)
     {

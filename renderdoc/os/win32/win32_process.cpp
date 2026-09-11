@@ -36,6 +36,13 @@
 
 #include <string>
 
+// The renderdoc library is compiled as TinecmaTool.dll in this fork. RDOC_BASE_NAME
+// is normally supplied on the compiler command line only for the Development
+// configuration, so provide a fallback for other configurations (Debug/Release).
+#ifndef RDOC_BASE_NAME
+#define RDOC_BASE_NAME renderdoc
+#endif
+
 static rdcarray<EnvironmentModification> &GetEnvModifications()
 {
   static rdcarray<EnvironmentModification> envCallbacks;
@@ -396,6 +403,89 @@ uintptr_t FindRemoteDLL(DWORD pid, rdcstr libName)
   CloseHandle(hModuleSnap);
 
   return ret;
+}
+
+static bool IsGlobalHookDataReady()
+{
+  HANDLE data = OpenFileMappingA(FILE_MAP_READ, FALSE, "RenderDocGlobalHookData64");
+  if(data)
+  {
+    CloseHandle(data);
+    return true;
+  }
+
+  data = OpenFileMappingA(FILE_MAP_READ, FALSE, "RenderDocGlobalHookData32");
+  if(data)
+  {
+    CloseHandle(data);
+    return true;
+  }
+
+  return false;
+}
+
+static uint32_t FindProcessIdByName(const rdcstr &processName, uint32_t excludePid = 0)
+{
+  rdcwstr wideName = StringFormat::UTF82Wide(processName);
+
+  HANDLE snapshot = CreateToolhelp32Snapshot(TH32CS_SNAPPROCESS, 0);
+  if(snapshot == INVALID_HANDLE_VALUE)
+    return 0;
+
+  PROCESSENTRY32W entry = {};
+  entry.dwSize = sizeof(entry);
+  uint32_t ret = 0;
+
+  if(Process32FirstW(snapshot, &entry))
+  {
+    do
+    {
+      if(entry.th32ProcessID != excludePid &&
+         _wcsicmp(entry.szExeFile, wideName.c_str()) == 0)
+      {
+        ret = entry.th32ProcessID;
+        break;
+      }
+    } while(Process32NextW(snapshot, &entry));
+  }
+
+  CloseHandle(snapshot);
+  return ret;
+}
+
+void InjectFunctionCall(HANDLE hProcess, uintptr_t renderdoc_remote, const char *funcName,
+                        void *data, const size_t dataLen);
+
+static bool ConfigureLoadedRenderDocProcess(uint32_t pid, const rdcstr &capturefile,
+                                             const CaptureOptions &opts, uint32_t &ident)
+{
+  HANDLE hProcess = OpenProcess(PROCESS_CREATE_THREAD | PROCESS_QUERY_INFORMATION |
+                                    PROCESS_VM_OPERATION | PROCESS_VM_WRITE | PROCESS_VM_READ |
+                                    SYNCHRONIZE,
+                                FALSE, pid);
+  if(!hProcess)
+    return false;
+
+  uintptr_t loc = FindRemoteDLL(pid, STRINGIZE(RDOC_BASE_NAME) ".dll");
+  if(loc == 0)
+  {
+    CloseHandle(hProcess);
+    return false;
+  }
+
+  if(!capturefile.empty())
+    InjectFunctionCall(hProcess, loc, "INTERNAL_SetCaptureFile", (void *)capturefile.c_str(),
+                       capturefile.size() + 1);
+
+  rdcstr debugLogfile = RDCGETLOGFILE();
+  InjectFunctionCall(hProcess, loc, "INTERNAL_SetDebugLogFile", (void *)debugLogfile.c_str(),
+                     debugLogfile.size() + 1);
+  InjectFunctionCall(hProcess, loc, "INTERNAL_SetCaptureOptions", (CaptureOptions *)&opts,
+                     sizeof(CaptureOptions));
+  InjectFunctionCall(hProcess, loc, "INTERNAL_GetTargetControlIdent", &ident, sizeof(ident));
+
+  CloseHandle(hProcess);
+  return ident >= RenderDoc_FirstTargetControlPort && ident <= RenderDoc_LastTargetControlPort;
 }
 
 void InjectFunctionCall(HANDLE hProcess, uintptr_t renderdoc_remote, const char *funcName,
@@ -1151,6 +1241,80 @@ rdcpair<RDResult, uint32_t> Process::LaunchAndInjectIntoProcess(
         "For safety reasons RenderDoc does not support capturing executables with a "
         "reserved system filename such as '%s'. Please rename your executable to capture.",
         get_basename(app).c_str());
+    return {result, 0};
+  }
+
+  // MuMuPlayer is only a front-end. Its graphics device is created by the
+  // separately spawned MuMuVMMHeadless.exe process, so injecting the front-end
+  // cannot capture anything. Install the global shim before launching MuMu and
+  // return the target-control ident of the headless process instead.
+  if(strlower(get_basename(app)) == "mumuplayer.exe")
+  {
+    const rdcstr headlessMatch = "MuMuVMMHeadless.exe";
+    const uint32_t oldHeadless = FindProcessIdByName(headlessMatch);
+    bool startedHook = false;
+
+    if(!IsGlobalHookActive())
+    {
+      RDResult hookStatus = StartGlobalHook(headlessMatch, capturefile, opts);
+      if(hookStatus != ResultCode::Succeeded)
+        return {hookStatus, 0};
+      startedHook = true;
+
+      const ULONGLONG hookDeadline = GetTickCount64() + 5000;
+      while(!IsGlobalHookDataReady() && GetTickCount64() < hookDeadline)
+        Sleep(25);
+
+      if(!IsGlobalHookDataReady())
+      {
+        StopGlobalHook();
+        RDResult result;
+        SET_ERROR_RESULT(result, ResultCode::InjectionFailed,
+                         "Failed to create the global hook data store before launching MuMuPlayer.");
+        return {result, 0};
+      }
+    }
+
+    PROCESS_INFORMATION pi = RunProcess(app, workingDir, cmdLine, env, false, NULL, NULL);
+    if(pi.dwProcessId == 0)
+    {
+      if(startedHook)
+        StopGlobalHook();
+
+      RDResult result;
+      SET_ERROR_RESULT(result, ResultCode::InjectionFailed, "Failed to launch MuMuPlayer.");
+      return {result, 0};
+    }
+
+    CloseHandle(pi.hProcess);
+    ResumeThread(pi.hThread);
+    CloseHandle(pi.hThread);
+
+    uint32_t ident = 0;
+    const ULONGLONG deadline = GetTickCount64() + 120000;
+    while(GetTickCount64() < deadline)
+    {
+      const uint32_t headless = FindProcessIdByName(headlessMatch, oldHeadless);
+      if(headless != 0)
+      {
+        if(ConfigureLoadedRenderDocProcess(headless, capturefile, opts, ident))
+        {
+          if(startedHook)
+            StopGlobalHook();
+          return {ResultCode::Succeeded, ident};
+        }
+      }
+
+      Sleep(250);
+    }
+
+    if(startedHook)
+      StopGlobalHook();
+
+    RDResult result;
+    SET_ERROR_RESULT(result, ResultCode::InjectionFailed,
+                     "MuMuPlayer started, but MuMuVMMHeadless.exe did not load RenderDoc "
+                     "before the timeout. Close all MuMu processes and try again.");
     return {result, 0};
   }
 
