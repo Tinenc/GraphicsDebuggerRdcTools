@@ -65,7 +65,7 @@ void TipsDialog::initialize()
 
   // Tip 1
   m_tips.push_back(Tip(tr("Talk to me!"),
-                       tr("RenderDoc is a labour of love and is actively developed. If you run "
+                       tr("TinecmaTool is a labour of love and is actively developed. If you run "
                           "into a bug, please file it on github and I will investigate it as best "
                           "as I can. If you have a feature request for functionality or "
                           "improvements please file it as well so that it can be considered.")));
@@ -128,7 +128,7 @@ void TipsDialog::initialize()
   // Tip 10
   m_tips.push_back(
       Tip(tr("Shader debug information"),
-          tr("You'll get the best results in RenderDoc by stripping as little debug information as "
+          tr("You'll get the best results in TinecmaTool by stripping as little debug information as "
              "possible from shaders. Reflection data is used all over the place to produce a nicer "
              "debugging experience.\n\nIf you do strip debug or reflection information, you can "
              "store it separately to be loaded later. More information is in the documentation.")));
@@ -136,7 +136,7 @@ void TipsDialog::initialize()
   // Tip 11
   m_tips.push_back(
       Tip(tr("Shader editing & Replacement"),
-          tr("RenderDoc has the ability to edit and replace shaders and see the results live in "
+          tr("TinecmaTool has the ability to edit and replace shaders and see the results live in "
              "the replay. On the pipeline state view, click the edit icon next to the shader. If "
              "source is available, it will be compiled, otherwise an empty stub with resources "
              "will be generated.\n\nThe shader will be replaced everywhere it is used in the "
@@ -145,7 +145,7 @@ void TipsDialog::initialize()
   // Tip 12
   m_tips.push_back(
       Tip(tr("Linear/Gamma display of textures"),
-          tr("RenderDoc interprets all textures in gamma space - even if the data is linear such "
+          tr("TinecmaTool interprets all textures in gamma space - even if the data is linear such "
              "as a normal map. This is by convention, since typically external image viewers will "
              "display a normal map as gamma data. This can be overridden by toggling the gamma "
              "button in the texture viewer.\n")));
@@ -153,7 +153,7 @@ void TipsDialog::initialize()
   // Tip 13
   m_tips.push_back(
       Tip(tr("Seeing texture usage in a capture"),
-          tr("RenderDoc has a list of how each texture is bound and used - whether as a shader "
+          tr("TinecmaTool has a list of how each texture is bound and used - whether as a shader "
              "resource, an output target, or a copy source. When the texture is active in the "
              "texture viewer this usage will be displayed on the timeline bar at the top.\n\nYou "
              "can also right click on the thumbnails in the texture viewer to see a list of this "
@@ -176,7 +176,7 @@ void TipsDialog::initialize()
 
   // Tip 16
   m_tips.push_back(Tip(tr("Python scripting"),
-                       tr("RenderDoc supports some amount of Python scripting. Open up the Python "
+                       tr("TinecmaTool supports some amount of Python scripting. Open up the Python "
                           "shell in the UI to either use it interactively or load and execute "
                           "python scripts.\n\nThe 'renderdoc' object is an instance of the "
                           "'CaptureContext' class - see the documentation for more information.")));
@@ -184,7 +184,7 @@ void TipsDialog::initialize()
   // Tip 17
   m_tips.push_back(Tip(
       tr("Pixel history view"),
-      tr("RenderDoc supports a pixel history view, showing the list of all modification events "
+      tr("TinecmaTool supports a pixel history view, showing the list of all modification events "
          "that happened to a specified pixel. To launch it, simply pick the pixel you would like "
          "to view the history of in the texture viewer, and click the 'history' button underneath "
          "the zoomed-in pixel context.\n\nEach event will show up red or green depending on "
@@ -210,7 +210,7 @@ void TipsDialog::initialize()
   // Tip 20
   m_tips.push_back(
       Tip(tr("Gathering of per-event callstacks"),
-          tr("RenderDoc is able to gather callstacks either per-drawcall or per-API event. You can "
+          tr("TinecmaTool is able to gather callstacks either per-drawcall or per-API event. You can "
              "do this by enabling the option before launching an application capture.\n\nWhen "
              "loading the log, initially the callstacks will not be available until symbols are "
              "resolved. Go to tools -> resolve symbols to load up the pdbs matching the modules "
@@ -226,7 +226,7 @@ void TipsDialog::initialize()
   // Tip 22
   m_tips.push_back(
       Tip(tr("Custom texture display shaders"),
-          tr("RenderDoc supports writing custom shaders to decode the viewed texture, which can be "
+          tr("TinecmaTool supports writing custom shaders to decode the viewed texture, which can be "
              "useful to e.g. colourise stencil values or decode a packed gbuffer texture.\n\nIn "
              "the toolbar in the texture viewer, select custom instead of RGBA on the left side, "
              "and use the UI to create a new shader. The docs contain full listings of available "
@@ -235,14 +235,14 @@ void TipsDialog::initialize()
   // Tip 23
   m_tips.push_back(
       Tip(tr("Texture histogram"),
-          tr("RenderDoc can display a channel histogram showing the distribution of values within "
+          tr("TinecmaTool can display a channel histogram showing the distribution of values within "
              "the visible range. Simply click the graph button on the texture viewer to the right "
              "of the range control, and it will expand to show the histogram.\n")));
 
   // Tip 24
   m_tips.push_back(
       Tip(tr("Attaching to a running instance"),
-          tr("Once you have launched your program from RenderDoc, even if you close the UI you can "
+          tr("Once you have launched your program from TinecmaTool, even if you close the UI you can "
              "re-connect to it once it is running via File -> Attach to Running Instance, and "
              "everything works as if you had launched it.\n\nYou can even do this across a "
              "network, by adding a remote IP or hostname. You will connect over the network and "
@@ -256,7 +256,7 @@ void TipsDialog::initialize()
              "can let you quickly jump back and forth through the log between important "
              "points.\n\nWhen you have some bookmarks, shortcut buttons will appear in a small bar "
              "at the top of the browser, and the shortcut keys Ctrl-1 through Ctrl-0 jump to the "
-             "first 10 bookmarks - these shortcuts are global regardless of which RenderDoc window "
+             "first 10 bookmarks - these shortcuts are global regardless of which TinecmaTool window "
              "is currently in focus.\n")));
 
   // Tip 26

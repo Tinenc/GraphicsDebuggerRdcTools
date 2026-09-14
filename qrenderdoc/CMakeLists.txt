@@ -10,7 +10,7 @@ if( NOT DEFINED QT_QMAKE_EXECUTABLE )
 endif()
 
 set(QMAKE_QT5_COMMAND ${QT_QMAKE_EXECUTABLE} CACHE STRING "Command to run to invoke Qt5's qmake. Normally this is qmake, possibly with qtchooser, but might be qmake-qt5")
-set(RENDERDOC_SWIG_PACKAGE https://github.com/baldurk/swig/archive/renderdoc-modified-7.zip CACHE STRING "The location where RenderDoc's swig fork source can be found. By default points to the URL on github but can be pointed to a local file.")
+set(RENDERDOC_SWIG_PACKAGE https://github.com/baldurk/swig/archive/renderdoc-modified-7.zip CACHE STRING "The location where TinecmaTool's swig fork source can be found. By default points to the URL on github but can be pointed to a local file.")
 set(RENDERDOC_PCRE_PACKAGE https://sourceforge.net/projects/pcre/files/pcre/8.45/pcre-8.45.tar.gz CACHE STRING "The location where the pcre library package can be found. By default points to the URL on sourceforge but can be pointed to a local file.")
 
 # Only check qt version if we're building qrenderdoc
@@ -134,7 +134,7 @@ endif()
 set( GENERATOR_MAKE "$(MAKE)" )
 set( GENERATOR_MAKE_PARAMS "" )
 if( NOT CMAKE_MAKE_PROGRAM MATCHES "make$" )
-    message( "Non make generator detected. Some projects compiled using add_custom_command like swig and QRenderDoc target will still be using make" )
+    message( "Non make generator detected. Some projects compiled using add_custom_command like swig and QTinecmaTool target will still be using make" )
     set( GENERATOR_MAKE "make" )
 
     include(ProcessorCount)
@@ -151,7 +151,7 @@ if(APPLE AND CMAKE_GENERATOR STREQUAL "Xcode")
     if("${SHELL_CAPTURED_PATH}" STREQUAL "")
         set(SHELL_CAPTURED_PATH $ENV{PATH} CACHE STRING "Shell PATH" FORCE)
     endif()
-    message(STATUS "Using custom path for targets custom_swig and QRenderDoc")
+    message(STATUS "Using custom path for targets custom_swig and QTinecmaTool")
     set(SET_SYSTEM_PATH_COMMAND ${CMAKE_COMMAND} -E env PATH=${SHELL_CAPTURED_PATH})
 endif()
 
@@ -235,7 +235,7 @@ file(WRITE
 if(APPLE)
     file(APPEND
         ${CMAKE_BINARY_DIR}/qrenderdoc/qrenderdoc_cmake.pri
-        "OSX_ICONFILE=${CMAKE_CURRENT_BINARY_DIR}/RenderDoc.icns\n"
+        "OSX_ICONFILE=${CMAKE_CURRENT_BINARY_DIR}/TinecmaTool.icns\n"
         "QMAKE_MACOSX_DEPLOYMENT_TARGET=${CMAKE_OSX_DEPLOYMENT_TARGET}\n")
 endif()
 
@@ -414,11 +414,11 @@ endif()
 # can do dependency checking and rebuild anything necessary.
 # Xcode does not match this behaviour. Add broad brush file dependencies.
 # Xcode has an option to match this behaviour (not exposed by cmake).
-add_custom_command(OUTPUT QRenderDoc
+add_custom_command(OUTPUT QTinecmaTool
     COMMAND ${SET_SYSTEM_PATH_COMMAND} ${QMAKE_QT5_COMMAND} "CMAKE_DIR=${CMAKE_BINARY_DIR}" ${CMAKE_CURRENT_SOURCE_DIR}
     COMMAND ${GENERATOR_MAKE} ${GENERATOR_MAKE_PARAMS}
     DEPENDS ${QRD_DEPENDENCIES})
-add_custom_target(build-qrenderdoc ALL DEPENDS QRenderDoc DEPENDS renderdoc DEPENDS swig-bindings)
+add_custom_target(build-qrenderdoc ALL DEPENDS QTinecmaTool DEPENDS renderdoc DEPENDS swig-bindings)
 
 if(APPLE AND CMAKE_GENERATOR STREQUAL "Xcode")
     set_target_properties(build-qrenderdoc PROPERTIES XCODE_SCHEME_DEBUG_DOCUMENT_VERSIONING OFF)

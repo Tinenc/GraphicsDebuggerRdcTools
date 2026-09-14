@@ -46,7 +46,7 @@
 
 RDOC_EXTERN_CONFIG(bool, Vulkan_Debug_SingleSubmitFlushing);
 
-static const char *SPIRVDisassemblyTarget = "SPIR-V (RenderDoc)";
+static const char *SPIRVDisassemblyTarget = "SPIR-V (TinecmaTool)";
 static const char *AMDShaderInfoTarget = "AMD_shader_info";
 static const char *KHRExecutablePropertiesTarget = "KHR_pipeline_executable_properties";
 
@@ -5617,7 +5617,7 @@ RDResult Vulkan_CreateReplayDevice(RDCFile *rdc, const ReplayOptions &opts, IRep
     {
       RETURN_ERROR_RESULT(ResultCode::APIIncompatibleVersion,
                           "Vulkan capture is incompatible version %llu, newest supported by this "
-                          "build of RenderDoc is %llu",
+                          "build of TinecmaTool is %llu",
                           ver, VkInitParams::CurrentVersion);
     }
 

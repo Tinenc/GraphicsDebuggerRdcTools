@@ -4981,7 +4981,7 @@ ID3D12GraphicsCommandListX *WrappedID3D12Device::GetInitialStateList()
     if(IsReplayMode(m_State))
     {
       D3D12MarkerRegion::Begin(initStateCurList,
-                               "!!!!RenderDoc Internal: ApplyInitialContents batched list");
+                               "!!!!TinecmaTool Internal: ApplyInitialContents batched list");
     }
   }
 
@@ -5700,7 +5700,7 @@ void WrappedID3D12Device::ReplayLog(uint32_t startEventID, uint32_t endEventID,
   if(!partial)
   {
     {
-      D3D12MarkerRegion apply(GetQueue(), "!!!!RenderDoc Internal: ApplyInitialContents");
+      D3D12MarkerRegion apply(GetQueue(), "!!!!TinecmaTool Internal: ApplyInitialContents");
       ApplyInitialContents();
     }
 
@@ -5726,7 +5726,7 @@ void WrappedID3D12Device::ReplayLog(uint32_t startEventID, uint32_t endEventID,
   m_State = CaptureState::ActiveReplaying;
 
   D3D12MarkerRegion::Set(
-      GetQueue(), StringFormat::Fmt("!!!!RenderDoc Internal: RenderDoc Replay %d (%d): %u->%u",
+      GetQueue(), StringFormat::Fmt("!!!!TinecmaTool Internal: TinecmaTool Replay %d (%d): %u->%u",
                                     (int)replayType, (int)partial, startEventID, endEventID));
 
   if(!partial)
@@ -5825,7 +5825,7 @@ void WrappedID3D12Device::ReplayLog(uint32_t startEventID, uint32_t endEventID,
     }
   }
 
-  D3D12MarkerRegion::Set(GetQueue(), "!!!!RenderDoc Internal: Done replay");
+  D3D12MarkerRegion::Set(GetQueue(), "!!!!TinecmaTool Internal: Done replay");
 
   // ensure all UAV writes have finished before subsequent work
   ID3D12GraphicsCommandList *list = GetNewList();

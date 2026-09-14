@@ -186,7 +186,7 @@ Default - disabled
 )");
   bool hookIntoChildren;
 
-  DOCUMENT(R"(By default RenderDoc only includes resources in the final logfile necessary
+  DOCUMENT(R"(By default TinecmaTool only includes resources in the final logfile necessary
 for that frame, this allows you to override that behaviour.
 
 Default - disabled

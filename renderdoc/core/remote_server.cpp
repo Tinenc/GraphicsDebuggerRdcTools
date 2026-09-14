@@ -308,7 +308,7 @@ static void ActiveRemoteClientThread(ClientThread *threadData,
     reader.ConfigureStructuredExport(&GetRemoteServerChunkName, false, 0, 1.0);
     writer.ConfigureStructuredExport(&GetRemoteServerChunkName, false, 0, 1.0);
 
-    rdcstr filename = FileIO::GetTempFolderFilename() + "/RenderDoc/RemoteServer_Server.log";
+    rdcstr filename = FileIO::GetTempFolderFilename() + "/TinecmaTool/RemoteServer_Server.log";
 
     RDCLOG("Logging remote server work to '%s'", filename.c_str());
 
@@ -1416,7 +1416,7 @@ RemoteServer::RemoteServer(Network::Socket *sock, const rdcstr &deviceID)
     reader->ConfigureStructuredExport(&GetRemoteServerChunkName, false, 0, 1.0);
     writer->ConfigureStructuredExport(&GetRemoteServerChunkName, false, 0, 1.0);
 
-    rdcstr filename = FileIO::GetTempFolderFilename() + "/RenderDoc/RemoteServer_Client.log";
+    rdcstr filename = FileIO::GetTempFolderFilename() + "/TinecmaTool/RemoteServer_Client.log";
 
     RDCLOG("Logging remote server work to '%s'", filename.c_str());
 

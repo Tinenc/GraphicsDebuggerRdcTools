@@ -2322,10 +2322,10 @@ VkBool32 VKAPI_PTR UserDebugReportCallback(VkDebugReportFlagsEXT flags,
 
       user->createInfo.pfnCallback(flags, VK_DEBUG_REPORT_OBJECT_TYPE_INSTANCE_EXT,
                                    (uint64_t)user->wrappedInstance, 1, 1, "RDOC",
-                                   "While debugging through RenderDoc, debug output through "
+                                   "While debugging through TinecmaTool, debug output through "
                                    "validation layers is suppressed.\n"
                                    "To show debug output look at the 'DebugOutputMute' capture "
-                                   "option in RenderDoc's API, but "
+                                   "option in TinecmaTool's API, but "
                                    "be aware of false positives from the validation layers.",
                                    user->createInfo.pUserData);
     }
@@ -2369,9 +2369,9 @@ VkBool32 VKAPI_PTR UserDebugUtilsCallback(VkDebugUtilsMessageSeverityFlagBitsEXT
       data.messageIdNumber = 1;
       data.pMessageIdName = NULL;
       data.pMessage =
-          "While debugging through RenderDoc, debug output through validation layers is "
+          "While debugging through TinecmaTool, debug output through validation layers is "
           "suppressed.\n"
-          "To show debug output look at the 'DebugOutputMute' capture option in RenderDoc's API, "
+          "To show debug output look at the 'DebugOutputMute' capture option in TinecmaTool's API, "
           "but be aware of false positives from the validation layers.";
       data.sType = VK_STRUCTURE_TYPE_DEBUG_UTILS_MESSENGER_CALLBACK_DATA_EXT;
 

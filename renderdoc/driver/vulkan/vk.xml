@@ -63,7 +63,7 @@ branch of the member gitlab server.
         <tag name="SAMSUNG"     author="Samsung Electronics Co., Ltd." contact="Ralph Potter @r-potter"/>
         <tag name="SEC"         author="Samsung Electronics Co., Ltd." contact="Ralph Potter @r-potter"/>
         <tag name="TIZEN"       author="Samsung Electronics Co., Ltd." contact="Ralph Potter @r-potter"/>
-        <tag name="RENDERDOC"   author="RenderDoc (renderdoc.org)"     contact="Baldur Karlsson @baldurk"/>
+        <tag name="RENDERDOC"   author="TinecmaTool (renderdoc.org)"     contact="Baldur Karlsson @baldurk"/>
         <tag name="NN"          author="Nintendo Co., Ltd."            contact="Yasuhiro Yoshioka gitlab:@yoshioka_yasuhiro"/>
         <tag name="MVK"         author="The Brenwill Workshop Ltd."    contact="Bill Hollings @billhollings"/>
         <tag name="KHR"         author="Khronos"                       contact="Ralph Potter @r-potter"/>

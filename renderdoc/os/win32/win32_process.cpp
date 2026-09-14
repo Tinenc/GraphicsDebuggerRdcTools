@@ -27,6 +27,7 @@
 #include <windows.h>
 
 #include <Psapi.h>
+#include <string.h>
 #include <tchar.h>
 #include <tlhelp32.h>
 #include "common/formatting.h"
@@ -36,11 +37,14 @@
 
 #include <string>
 
-// The renderdoc library is compiled as TinecmaTool.dll in this fork. RDOC_BASE_NAME
-// is normally supplied on the compiler command line only for the Development
-// configuration, so provide a fallback for other configurations (Debug/Release).
+// RDOC_BASE_NAME is the one source of this DLL's name: it produces the module name that gets
+// checked / injected ("TinecmaTool.dll") AND the replay marker the DLL looks for
+// ("TinecmaTool__replay__marker", see REPLAY_PROGRAM_MARKER in api/replay/renderdoc_replay.h).
+// The vcxproj supplies it as $(ProjectName) for the Development configuration only, so provide
+// the same value as a fallback for the other configurations (Debug/Release). Both sides of the
+// marker check must always agree - change this and the marker string together, never one alone.
 #ifndef RDOC_BASE_NAME
-#define RDOC_BASE_NAME renderdoc
+#define RDOC_BASE_NAME TinecmaTool
 #endif
 
 static rdcarray<EnvironmentModification> &GetEnvModifications()
@@ -407,14 +411,14 @@ uintptr_t FindRemoteDLL(DWORD pid, rdcstr libName)
 
 static bool IsGlobalHookDataReady()
 {
-  HANDLE data = OpenFileMappingA(FILE_MAP_READ, FALSE, "RenderDocGlobalHookData64");
+  HANDLE data = OpenFileMappingA(FILE_MAP_READ, FALSE, "TinecmaToolGlobalHookData64");
   if(data)
   {
     CloseHandle(data);
     return true;
   }
 
-  data = OpenFileMappingA(FILE_MAP_READ, FALSE, "RenderDocGlobalHookData32");
+  data = OpenFileMappingA(FILE_MAP_READ, FALSE, "TinecmaToolGlobalHookData32");
   if(data)
   {
     CloseHandle(data);
@@ -801,13 +805,13 @@ rdcpair<RDResult, uint32_t> Process::InjectIntoProcess(uint32_t pid,
       CloseHandle(hProcess);
       RDResult result;
       SET_ERROR_RESULT(result, ResultCode::IncompatibleProcess,
-                       "Can't capture 64-bit program with 32-bit build of RenderDoc. Please run a "
-                       "64-bit build of RenderDoc");
+                       "Can't capture 64-bit program with 32-bit build of TinecmaTool. Please run a "
+                       "64-bit build of TinecmaTool");
       return {result, 0};
     }
   }
 #else
-  // farm off to alternate bitness renderdoccmd.exe
+  // farm off to alternate bitness TinecmaToolcmd.exe
 
   // if the target process is 'wow64' that means it's 32-bit.
   capalt = (isWow64 == TRUE);
@@ -825,7 +829,7 @@ rdcpair<RDResult, uint32_t> Process::InjectIntoProcess(uint32_t pid,
 
       renderdocPath[idx] = 0;
 
-      wcscat_s(renderdocPath, L"\\Win32\\Development\\renderdoccmd.exe");
+      wcscat_s(renderdocPath, L"\\Win32\\Development\\TinecmaToolcmd.exe");
     }
 
     if(!devLocation)
@@ -838,7 +842,7 @@ rdcpair<RDResult, uint32_t> Process::InjectIntoProcess(uint32_t pid,
 
         renderdocPath[idx] = 0;
 
-        wcscat_s(renderdocPath, L"\\Win32\\Release\\renderdoccmd.exe");
+        wcscat_s(renderdocPath, L"\\Win32\\Release\\TinecmaToolcmd.exe");
       }
     }
 
@@ -853,7 +857,7 @@ rdcpair<RDResult, uint32_t> Process::InjectIntoProcess(uint32_t pid,
         *slash = 0;
 
       // append path
-      wcscat_s(renderdocPath, L"\\x86\\renderdoccmd.exe");
+      wcscat_s(renderdocPath, L"\\x86\\TinecmaToolcmd.exe");
     }
 #else
     // if it looks like we're in the development environment, look for the alternate bitness in the
@@ -865,7 +869,7 @@ rdcpair<RDResult, uint32_t> Process::InjectIntoProcess(uint32_t pid,
 
       renderdocPath[idx] = 0;
 
-      wcscat_s(renderdocPath, L"\\x64\\Development\\renderdoccmd.exe");
+      wcscat_s(renderdocPath, L"\\x64\\Development\\TinecmaToolcmd.exe");
     }
 
     if(!devLocation)
@@ -878,7 +882,7 @@ rdcpair<RDResult, uint32_t> Process::InjectIntoProcess(uint32_t pid,
 
         renderdocPath[idx] = 0;
 
-        wcscat_s(renderdocPath, L"\\x64\\Release\\renderdoccmd.exe");
+        wcscat_s(renderdocPath, L"\\x64\\Release\\TinecmaToolcmd.exe");
       }
     }
 
@@ -898,7 +902,7 @@ rdcpair<RDResult, uint32_t> Process::InjectIntoProcess(uint32_t pid,
         *slash = 0;
 
       // append path
-      wcscat_s(renderdocPath, L"\\renderdoccmd.exe");
+      wcscat_s(renderdocPath, L"\\TinecmaToolcmd.exe");
     }
 #endif
 
@@ -1021,7 +1025,7 @@ rdcpair<RDResult, uint32_t> Process::InjectIntoProcess(uint32_t pid,
       SET_ERROR_RESULT(
           result, ResultCode::InternalError,
           "Can't run 32-bit renderdoccmd to capture 32-bit program."
-          "If this is a locally built RenderDoc you must build both 32-bit and 64-bit versions.");
+          "If this is a locally built TinecmaTool you must build both 32-bit and 64-bit versions.");
 #endif
       CloseHandle(hProcess);
       return {result, 0};
@@ -1238,7 +1242,7 @@ rdcpair<RDResult, uint32_t> Process::LaunchAndInjectIntoProcess(
     RDResult result;
     SET_ERROR_RESULT(
         result, ResultCode::InjectionFailed,
-        "For safety reasons RenderDoc does not support capturing executables with a "
+        "For safety reasons TinecmaTool does not support capturing executables with a "
         "reserved system filename such as '%s'. Please rename your executable to capture.",
         get_basename(app).c_str());
     return {result, 0};
@@ -1313,7 +1317,7 @@ rdcpair<RDResult, uint32_t> Process::LaunchAndInjectIntoProcess(
 
     RDResult result;
     SET_ERROR_RESULT(result, ResultCode::InjectionFailed,
-                     "MuMuPlayer started, but MuMuVMMHeadless.exe did not load RenderDoc "
+                     "MuMuPlayer started, but MuMuVMMHeadless.exe did not load TinecmaTool "
                      "before the timeout. Close all MuMu processes and try again.");
     return {result, 0};
   }
@@ -1385,7 +1389,7 @@ static RDResult HandleRegError(HKEY keyNative, HKEY keyWow32, LSTATUS ret, const
 
   RETURN_ERROR_RESULT(ResultCode::InjectionFailed,
                       "Error updating registry to enable global hook.\n"
-                      "Check that RenderDoc is correctly running as administrator.");
+                      "Check that TinecmaTool is correctly running as administrator.");
 }
 
 #define REG_CHECK(msg)                                    \
@@ -1394,6 +1398,76 @@ static RDResult HandleRegError(HKEY keyNative, HKEY keyWow32, LSTATUS ret, const
     return HandleRegError(keyNative, keyWow32, ret, msg); \
   }
 
+//
+// AppInit_DLLs is parsed as a space-separated list, so the path must not contain any spaces, which
+// is why this used to shorten the entire path to 8.3. The problem is that the *file* alias is not
+// stable: a development output directory is rewritten on every rebuild, which reshuffles the
+// ~1/~2 suffixes within it. A short name that was written for the shim can therefore silently
+// start resolving to a different DLL in the same folder - in particular the main TinecmaTool.dll.
+// Since this value is loaded into *every* process on the machine, a stale entry turns into a
+// system-wide injection of the wrong module.
+//
+// So instead of shortening the whole path we only shorten the directory components, whose aliases
+// are assigned once and stay stable, and keep the real DLL filename verbatim - it never contains a
+// space. Returns false if a space-free path could not be produced.
+static bool GetAppInitShimPath(const rdcstr &utf8path, rdcwstr &out)
+{
+  if(utf8path.empty())
+    return false;
+
+  rdcwstr wide = StringFormat::UTF82Wide(utf8path);
+  std::wstring path = wide.c_str();
+
+  // nothing to do if the path is already space-free
+  if(path.find(L' ') == std::wstring::npos)
+  {
+    out = wide;
+    return true;
+  }
+
+  // split the trailing filename off, we always keep it as-is
+  const size_t lastSep = path.find_last_of(L"\\/");
+
+  if(lastSep == std::wstring::npos)
+    return false;
+
+  const std::wstring dirPart = path.substr(0, lastSep);
+  const std::wstring filePart = path.substr(lastSep + 1, std::wstring::npos);
+
+  wchar_t shortdir[1024] = {};
+  if(GetShortPathNameW(dirPart.c_str(), shortdir, 1024) == 0)
+    return false;
+
+  std::wstring combined = std::wstring(shortdir) + L"\\" + filePart;
+
+  // if there's still a space in there we can't safely use it, AppInit_DLLs would split the value
+  if(combined.find(L' ') != std::wstring::npos)
+    return false;
+
+  out = rdcwstr(combined.c_str());
+  return true;
+}
+
+// Verify that the value we are about to store in AppInit_DLLs really does resolve back to the shim
+// dll we intend to load. This is the guard that catches a wrong / stale entry before it is written
+// into the registry.
+static bool VerifyAppInitShimPath(const rdcwstr &appinitpath, const rdcstr &expectedPath)
+{
+  if(appinitpath.c_str() == NULL || appinitpath.length() == 0)
+    return false;
+
+  if(GetFileAttributesW(appinitpath.c_str()) == INVALID_FILE_ATTRIBUTES)
+    return false;
+
+  wchar_t resolved[1024] = {};
+  if(GetLongPathNameW(appinitpath.c_str(), resolved, 1024) == 0)
+    return false;
+
+  rdcwstr expectedWide = StringFormat::UTF82Wide(expectedPath);
+
+  return _wcsicmp(resolved, expectedWide.c_str()) == 0;
+}
+
 // function to backup the previous settings for AppInit, then enable it and write our own paths.
 RDResult BackupAndChangeRegistry(GlobalHookData &hookdata, const rdcstr &shimpathWow32,
                                  const rdcstr &shimpathNative)
@@ -1401,32 +1475,36 @@ RDResult BackupAndChangeRegistry(GlobalHookData &hookdata, const rdcstr &shimpat
   HKEY keyNative = NULL;
   HKEY keyWow32 = NULL;
 
-  // AppInit_DLLs requires short paths, but short paths can be disabled globally or on a per-volume
-  // level. If short paths are disabled we'll get the long path back, we *always* expect the path to
-  // get shorter because the shim filename is bigger than 8.3.
+  // build and validate the native path up front, before we touch the registry at all
+  rdcwstr appinitPath;
 
-  DWORD nativeShortSize = GetShortPathNameW(StringFormat::UTF82Wide(shimpathNative).c_str(), NULL,
-                                            (DWORD)shimpathNative.length());
-  if(nativeShortSize == (DWORD)shimpathNative.length() + 1)
+  if(!GetAppInitShimPath(shimpathNative, appinitPath))
   {
-    RETURN_ERROR_RESULT(
-        ResultCode::FileIOFailed,
-        "RenderDoc is installed on a volume or system that has short paths disabled.\n"
-        "For the global hook, short paths must be enabled where RenderDoc is installed.");
+    RETURN_ERROR_RESULT(ResultCode::FileIOFailed,
+                        "The tool is installed on a volume or system that has short paths disabled. "
+                        "For the global hook, short paths must be enabled where the tool is installed.");
   }
 
-  if(!shimpathWow32.empty())
+  if(!VerifyAppInitShimPath(appinitPath, shimpathNative))
   {
-    DWORD wow32ShortSize = GetShortPathNameW(StringFormat::UTF82Wide(shimpathWow32).c_str(), NULL,
-                                             (DWORD)shimpathWow32.length());
+    RETURN_ERROR_RESULT(ResultCode::FileIOFailed,
+                        "The global hook shim '%s' resolved to '%s' which does not point back to it. "
+                        "Refusing to write an AppInit_DLLs value that would load the wrong module into every process.",
+                        shimpathNative.c_str(), StringFormat::Wide2UTF8(appinitPath).c_str());
+  }
 
-    if(wow32ShortSize == (DWORD)shimpathWow32.length() + 1)
-    {
-      RETURN_ERROR_RESULT(
-          ResultCode::FileIOFailed,
-          "RenderDoc is installed on a volume or system that has short paths disabled.\n"
-          "For the global hook, short paths must be enabled where RenderDoc is installed.");
-    }
+  // The 32-bit shim is optional: a 64-bit-only build doesn't produce it. Don't write (or try to
+  // validate) an AppInit_DLLs entry for a file that isn't there - that used to leave a dead entry
+  // behind for every 32-bit process, and now would just make the whole hook fail. Skip the WOW64
+  // half instead.
+  rdcstr wow32path = shimpathWow32;
+
+  if(!wow32path.empty() &&
+     GetFileAttributesW(StringFormat::UTF82Wide(wow32path).c_str()) == INVALID_FILE_ATTRIBUTES)
+  {
+    RDCWARN("32-bit global hook shim '%s' was not found, the WOW64 global hook stays disabled",
+            wow32path.c_str());
+    wow32path = rdcstr();
   }
 
   // open the native key
@@ -1437,7 +1515,7 @@ RDResult BackupAndChangeRegistry(GlobalHookData &hookdata, const rdcstr &shimpat
   REG_CHECK("Could not open AppInit key");
 
   // if we are doing Wow32, open that key as well
-  if(!shimpathWow32.empty())
+  if(!wow32path.empty())
   {
     ret = RegCreateKeyExA(HKEY_LOCAL_MACHINE,
                           "SOFTWARE\\Wow6432Node\\Microsoft\\Windows NT\\CurrentVersion\\Windows",
@@ -1468,12 +1546,8 @@ RDResult BackupAndChangeRegistry(GlobalHookData &hookdata, const rdcstr &shimpat
   ret = RegSetValueExA(keyNative, "LoadAppInit_DLLs", 0, REG_DWORD, (const BYTE *)&one, sizeof(one));
   REG_CHECK("Could not set LoadAppInit_DLLs");
 
-  rdcwstr shortpath(shimpathNative.size());
-  GetShortPathNameW(StringFormat::UTF82Wide(shimpathNative).c_str(), shortpath.data(),
-                    (DWORD)shortpath.length());
-
-  ret = RegSetValueExW(keyNative, L"AppInit_DLLs", 0, REG_SZ, (const BYTE *)shortpath.data(),
-                       DWORD(shortpath.length() * sizeof(wchar_t)));
+  ret = RegSetValueExW(keyNative, L"AppInit_DLLs", 0, REG_SZ, (const BYTE *)appinitPath.c_str(),
+                       DWORD((appinitPath.length() + 1) * sizeof(wchar_t)));
   REG_CHECK("Could not set AppInit_DLLs");
 
   // if we're doing Wow32, repeat the process for those keys
@@ -1497,12 +1571,19 @@ RDResult BackupAndChangeRegistry(GlobalHookData &hookdata, const rdcstr &shimpat
     ret = RegSetValueExA(keyWow32, "LoadAppInit_DLLs", 0, REG_DWORD, (const BYTE *)&one, sizeof(one));
     REG_CHECK("Could not set LoadAppInit_DLLs");
 
-    shortpath = rdcwstr(shimpathWow32.size());
-    GetShortPathNameW(StringFormat::UTF82Wide(shimpathWow32).c_str(), shortpath.data(),
-                      (DWORD)shortpath.length());
+    if(!GetAppInitShimPath(wow32path, appinitPath) ||
+       !VerifyAppInitShimPath(appinitPath, wow32path))
+    {
+      RegCloseKey(keyNative);
+      RegCloseKey(keyWow32);
 
-    ret = RegSetValueExW(keyWow32, L"AppInit_DLLs", 0, REG_SZ, (const BYTE *)shortpath.data(),
-                         DWORD(shortpath.length() * sizeof(wchar_t)));
+      RETURN_ERROR_RESULT(ResultCode::FileIOFailed,
+                          "The 32-bit global hook shim '%s' could not be resolved to a usable path, refusing to write it to AppInit_DLLs.",
+                          wow32path.c_str());
+    }
+
+    ret = RegSetValueExW(keyWow32, L"AppInit_DLLs", 0, REG_SZ, (const BYTE *)appinitPath.c_str(),
+                         DWORD((appinitPath.length() + 1) * sizeof(wchar_t)));
     REG_CHECK("Could not set AppInit_DLLs");
   }
 
@@ -1543,7 +1624,7 @@ RDResult BackupAndChangeRegistry(GlobalHookData &hookdata, const rdcstr &shimpat
   // write it to disk but don't fail if we can't, just print it to the log and keep going.
   wchar_t reg_backup[MAX_PATH];
   GetTempPathW(MAX_PATH, reg_backup);
-  wcscat_s(reg_backup, L"RenderDoc_RestoreGlobalHook.reg");
+  wcscat_s(reg_backup, L"TinecmaTool_RestoreGlobalHook.reg");
 
   FILE *f = NULL;
   _wfopen_s(&f, reg_backup, L"w");
@@ -1661,8 +1742,8 @@ RDResult Process::StartGlobalHook(const rdcstr &pathmatch, const rdcstr &capture
 
   renderdocPath = get_dirname(renderdocPath);
 
-  // the native renderdoccmd.exe is always next to the dll. Wow32 will be somewhere else
-  rdcstr cmdpathNative = renderdocPath + "\\renderdoccmd.exe";
+  // the native TinecmaToolcmd.exe is always next to the dll. Wow32 will be somewhere else
+  rdcstr cmdpathNative = renderdocPath + "\\TinecmaToolcmd.exe";
   rdcstr cmdpathWow32;
 
   rdcstr shimpathNative = renderdocPath;
@@ -1670,8 +1751,8 @@ RDResult Process::StartGlobalHook(const rdcstr &pathmatch, const rdcstr &capture
 
 #if ENABLED(RDOC_X64)
 
-  // native shim is just renderdocshim64.dll
-  shimpathNative = renderdocPath + "\\renderdocshim64.dll";
+  // native shim is just TinecmaToolshim64.dll
+  shimpathNative = renderdocPath + "\\TinecmaToolshim64.dll";
 
   // if it looks like we're in the development environment, look for the alternate bitness in the
   // corresponding folder
@@ -1680,8 +1761,8 @@ RDResult Process::StartGlobalHook(const rdcstr &pathmatch, const rdcstr &capture
   {
     renderdocPath.erase(devLocation, ~0U);
 
-    shimpathWow32 = renderdocPath + "\\Win32\\Development\\renderdocshim32.dll";
-    cmdpathWow32 = renderdocPath + "\\Win32\\Development\\renderdoccmd.exe";
+    shimpathWow32 = renderdocPath + "\\Win32\\Development\\TinecmaToolshim32.dll";
+    cmdpathWow32 = renderdocPath + "\\Win32\\Development\\TinecmaToolcmd.exe";
   }
   else
   {
@@ -1691,22 +1772,22 @@ RDResult Process::StartGlobalHook(const rdcstr &pathmatch, const rdcstr &capture
     {
       renderdocPath.erase(devLocation, ~0U);
 
-      shimpathWow32 = renderdocPath + "\\Win32\\Release\\renderdocshim32.dll";
-      cmdpathWow32 = renderdocPath + "\\Win32\\Release\\renderdoccmd.exe";
+      shimpathWow32 = renderdocPath + "\\Win32\\Release\\TinecmaToolshim32.dll";
+      cmdpathWow32 = renderdocPath + "\\Win32\\Release\\TinecmaToolcmd.exe";
     }
   }
 
   // if we're not in the dev environment, assume it's under a x86\ subfolder
   if(devLocation < 0)
   {
-    shimpathWow32 = renderdocPath + "\\x86\\renderdocshim32.dll";
-    cmdpathWow32 = renderdocPath + "\\x86\\renderdoccmd.exe";
+    shimpathWow32 = renderdocPath + "\\x86\\TinecmaToolshim32.dll";
+    cmdpathWow32 = renderdocPath + "\\x86\\TinecmaToolcmd.exe";
   }
 
 #else
 
   // nothing fancy to do here for 32-bit, just point the shim next to our dll.
-  shimpathNative = renderdocPath + "\\renderdocshim32.dll";
+  shimpathNative = renderdocPath + "\\TinecmaToolshim32.dll";
 
 #endif
 

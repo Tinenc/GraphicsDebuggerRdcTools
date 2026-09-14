@@ -801,7 +801,7 @@ HRESULT WrappedID3D11Device::QueryInterface(REFIID riid, void **ppvObject)
   else if(riid == __uuidof(ID3D11InfoQueue))
   {
     RDCWARN(
-        "Returning a dummy ID3D11InfoQueue that does nothing. RenderDoc takes control of the debug "
+        "Returning a dummy ID3D11InfoQueue that does nothing. TinecmaTool takes control of the debug "
         "layer.");
     RDCWARN(
         "If you want direct access, enable API validation and query for %s. This will return the "
@@ -836,9 +836,9 @@ HRESULT WrappedID3D11Device::QueryInterface(REFIID riid, void **ppvObject)
     {
       if(!RenderDoc::Inst().GetCaptureOptions().apiValidation)
       {
-        RDCWARN("API Validation is not enabled, RenderDoc disabled the debug layer.");
+        RDCWARN("API Validation is not enabled, TinecmaTool disabled the debug layer.");
         RDCWARN(
-            "Enable this either in the capture options, or using the RenderDoc API before device "
+            "Enable this either in the capture options, or using the TinecmaTool API before device "
             "creation.");
       }
       return E_NOINTERFACE;
@@ -1586,13 +1586,13 @@ void WrappedID3D11Device::ReplayLog(uint32_t startEventID, uint32_t endEventID,
   if(!partial)
   {
     RENDERDOC_PROFILEREGION("ApplyInitialContents");
-    D3D11MarkerRegion apply("!!!!RenderDoc Internal: ApplyInitialContents");
+    D3D11MarkerRegion apply("!!!!TinecmaTool Internal: ApplyInitialContents");
     GetResourceManager()->ApplyInitialContents();
   }
 
   m_State = CaptureState::ActiveReplaying;
 
-  D3D11MarkerRegion::Set(StringFormat::Fmt("!!!!RenderDoc Internal: Replay %d (%d): %u->%u",
+  D3D11MarkerRegion::Set(StringFormat::Fmt("!!!!TinecmaTool Internal: Replay %d (%d): %u->%u",
                                            (int)replayType, (int)partial, startEventID, endEventID));
 
   m_ReplayEventCount = 0;
@@ -1615,7 +1615,7 @@ void WrappedID3D11Device::ReplayLog(uint32_t startEventID, uint32_t endEventID,
   for(int i = 0; i < m_ReplayEventCount; i++)
     D3D11MarkerRegion::End();
 
-  D3D11MarkerRegion::Set("!!!!RenderDoc Internal: Done replay");
+  D3D11MarkerRegion::Set("!!!!TinecmaTool Internal: Done replay");
 
   if(m_pDevice->GetDeviceRemovedReason() != S_OK)
     SET_ERROR_RESULT(m_FatalError, ResultCode::DeviceLost, "Device lost during replay: %s",

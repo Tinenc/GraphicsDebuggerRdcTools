@@ -107,9 +107,9 @@ rdcwstr GetSymSearchPath()
 
     sympath = L".;";
     sympath += appdata.c_str();
-    sympath += L"\\renderdoc\\symbols;SRV*";
+    sympath += L"\\TinecmaTool\\symbols;SRV*";
     sympath += appdata.c_str();
-    sympath += L"\\renderdoc\\symbols\\symsrv*http://msdl.microsoft.com/download/symbols";
+    sympath += L"\\TinecmaTool\\symbols\\symsrv*http://msdl.microsoft.com/download/symbols";
 
     return sympath.c_str();
   }
@@ -760,7 +760,7 @@ Win32CallstackResolver::Win32CallstackResolver(bool interactive, byte *moduleDB,
     for(;;)
     {
       DWORD read =
-          GetPrivateProfileStringW(L"renderdoc", L"ignores", NULL, inputBuf, sz, configPath.c_str());
+          GetPrivateProfileStringW(L"TinecmaTool", L"ignores", NULL, inputBuf, sz, configPath.c_str());
 
       if(read == sz - 1)
       {
@@ -776,7 +776,7 @@ Win32CallstackResolver::Win32CallstackResolver(bool interactive, byte *moduleDB,
     rdcstr ignores = StringFormat::Wide2UTF8(inputBuf);
 
     {
-      DWORD read = GetPrivateProfileStringW(L"renderdoc", L"msdiapath", NULL, inputBuf, sz,
+      DWORD read = GetPrivateProfileStringW(L"TinecmaTool", L"msdiapath", NULL, inputBuf, sz,
                                             configPath.c_str());
 
       if(read > 0)
@@ -966,7 +966,7 @@ Win32CallstackResolver::Win32CallstackResolver(bool interactive, byte *moduleDB,
           pdbName = get_dirname(defaultPdb) + "\\" + get_basename(defaultPdb);
 
           // prompt for new pdbName, unless it's renderdoc or dbghelp, or we're non-interactive
-          if(pdbName.contains("renderdoc.") || pdbName.contains("dbghelp.") ||
+          if(pdbName.contains("tinecmatool.") || pdbName.contains("dbghelp.") ||
              pdbName.contains("symsrv.") || !interactive)
             pdbName = "";
           else
@@ -1004,9 +1004,9 @@ Win32CallstackResolver::Win32CallstackResolver(bool interactive, byte *moduleDB,
 
       RDCWARN("Couldn't get symbols for %s", m.name.c_str());
 
-      // silently ignore renderdoc.dll, dbghelp.dll, and symsrv.dll without asking to permanently
+      // silently ignore TinecmaTool.dll, dbghelp.dll, and symsrv.dll without asking to permanently
       // ignore
-      if(m.name.contains("renderdoc.") || m.name.contains("dbghelp.") || m.name.contains("symsrv."))
+      if(m.name.contains("tinecmatool.") || m.name.contains("dbghelp.") || m.name.contains("symsrv."))
         continue;
 
       // if we're not interactive, just continue

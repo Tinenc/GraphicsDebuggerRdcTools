@@ -44,7 +44,7 @@
 RDOC_CONFIG(bool, OpenGL_HardwareCounters, true,
             "Enable support for IHV-specific hardware counters on OpenGL.");
 
-static const char *SPIRVDisassemblyTarget = "SPIR-V (RenderDoc)";
+static const char *SPIRVDisassemblyTarget = "SPIR-V (TinecmaTool)";
 
 GLReplay::GLReplay(WrappedOpenGL *d)
 {

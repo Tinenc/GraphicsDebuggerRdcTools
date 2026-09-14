@@ -231,7 +231,7 @@ void GetDefaultFiles(const rdcstr &logBaseName, rdcstr &capture_filename, rdcstr
   }
 
   capture_filename =
-      StringFormat::Fmt("%s/RenderDoc/%s_%04d.%02d.%02d_%02d.%02d.rdc", temp_folder, mod,
+      StringFormat::Fmt("%s/TinecmaTool/%s_%04d.%02d.%02d_%02d.%02d.rdc", temp_folder, mod,
                         1900 + now.tm_year, now.tm_mon + 1, now.tm_mday, now.tm_hour, now.tm_min);
 
   // set by UI when launching programs so all logging goes to the same file
@@ -240,7 +240,7 @@ void GetDefaultFiles(const rdcstr &logBaseName, rdcstr &capture_filename, rdcstr
     logging_filename = logfile_override;
   else
     logging_filename = StringFormat::Fmt(
-        "%s/RenderDoc/%s_%04d.%02d.%02d_%02d.%02d.%02d.log", temp_folder, logBaseName.c_str(),
+        "%s/TinecmaTool/%s_%04d.%02d.%02d_%02d.%02d.%02d.log", temp_folder, logBaseName.c_str(),
         1900 + now.tm_year, now.tm_mon + 1, now.tm_mday, now.tm_hour, now.tm_min, now.tm_sec);
 }
 

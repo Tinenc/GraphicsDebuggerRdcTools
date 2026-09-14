@@ -2016,7 +2016,7 @@ void WrappedOpenGL::SwapBuffers(WindowingSystem winSystem, void *windowHandle)
     if(m_NoCtxFrames == 100)
     {
       RDCERR(
-          "Seen 100 frames with no context current. RenderDoc requires a context to be current "
+          "Seen 100 frames with no context current. TinecmaTool requires a context to be current "
           "during the call to SwapBuffers to display its overlay and start/stop captures on "
           "default keys.\nIf your GL use is elsewhere, consider using the in-application API to "
           "trigger captures manually");
@@ -5865,7 +5865,7 @@ void WrappedOpenGL::ReplayLog(uint32_t startEventID, uint32_t endEventID, Replay
   if(!partial)
   {
     RENDERDOC_PROFILEREGION("ApplyInitialContents");
-    GLMarkerRegion apply("!!!!RenderDoc Internal: ApplyInitialContents");
+    GLMarkerRegion apply("!!!!TinecmaTool Internal: ApplyInitialContents");
     GetResourceManager()->ApplyInitialContents();
 
     m_WasActiveFeedback = false;
@@ -5873,7 +5873,7 @@ void WrappedOpenGL::ReplayLog(uint32_t startEventID, uint32_t endEventID, Replay
 
   m_State = CaptureState::ActiveReplaying;
 
-  GLMarkerRegion::Set(StringFormat::Fmt("!!!!RenderDoc Internal:  Replay %d (%d): %u->%u",
+  GLMarkerRegion::Set(StringFormat::Fmt("!!!!TinecmaTool Internal:  Replay %d (%d): %u->%u",
                                         (int)replayType, (int)partial, startEventID, endEventID));
 
   m_ReplayEventCount = 0;
@@ -5895,5 +5895,5 @@ void WrappedOpenGL::ReplayLog(uint32_t startEventID, uint32_t endEventID, Replay
   for(int i = 0; m_ReplayMarkers && i < m_ReplayEventCount; i++)
     GLMarkerRegion::End();
 
-  GLMarkerRegion::Set("!!!!RenderDoc Internal: Done replay");
+  GLMarkerRegion::Set("!!!!TinecmaTool Internal: Done replay");
 }

@@ -25,7 +25,7 @@
 #pragma once
 
 // don't add any Qt headers visible to SWIG, as we don't want a Qt dependency for the SWIG-generated
-// qrenderdoc module. Instead we should use public RDC types for any public QRenderDoc headers, and
+// qrenderdoc module. Instead we should use public RDC types for any public QTinecmaTool headers, and
 // define conversions to/from Qt types. See rdcstr / QString, rdcpair / QPair, and
 // rdcdatetime / QDateTime.
 #include <functional>
@@ -2034,7 +2034,7 @@ See :meth:`ReplaceResource`.
   //////////////////////////////////////////////////////////////////////////////
   // Accessors
 
-  DOCUMENT(R"(Retrieve the replay manager for access to the internal RenderDoc replay controller.
+  DOCUMENT(R"(Retrieve the replay manager for access to the internal TinecmaTool replay controller.
 
 :return: The current replay manager.
 :rtype: ReplayManager

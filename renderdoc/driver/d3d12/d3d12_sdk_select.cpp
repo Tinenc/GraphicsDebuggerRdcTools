@@ -422,7 +422,7 @@ D3D12DevConfiguration *D3D12_PrepareReplaySDKVersion(bool untrustedCapture, UINT
     // we try a few different  variants
     for(uint32_t i = 0; i < 32; i++)
     {
-      rdcstr filename = StringFormat::Fmt("%s/RenderDoc/D3D12Core/%u.ver%u/D3D12Core.dll",
+      rdcstr filename = StringFormat::Fmt("%s/TinecmaTool/D3D12Core/%u.ver%u/D3D12Core.dll",
                                           FileIO::GetTempFolderFilename().c_str(), i, SDKVersion);
 
       FileIO::CreateParentDirectory(filename);

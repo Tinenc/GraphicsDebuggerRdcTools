@@ -47,7 +47,7 @@
 
 #include "replay/renderdoc_serialise.inl"
 
-extern "C" const rdcstr VulkanLayerJSONBasename = STRINGIZE(RDOC_BASE_NAME);
+extern "C" const rdcstr VulkanLayerJSONBasename = RENDERDOC_VULKAN_LAYER_JSON_BASENAME;
 
 RDOC_DEBUG_CONFIG(bool, Capture_Debug_SnapshotDiagnosticLog, false,
                   "Snapshot the diagnostic log at capture time and embed in the capture.");
@@ -525,7 +525,7 @@ void RenderDoc::RecreateCrashHandler()
 
   // only create crash handler when we're not in renderdoccmd (to prevent infinite loop as
   // the crash handler itself launches renderdoccmd)
-  if(exename.contains("renderdoccmd"))
+  if(exename.contains("tinecmatoolcmd"))
     return;
 
 #if ENABLED(RDOC_WIN32)
@@ -690,7 +690,7 @@ void RenderDoc::Initialise()
   {
     rdcstr capture_filename;
 
-    const rdcstr base = IsReplayApp() ? "RenderDoc" : "RenderDoc_app";
+    const rdcstr base = IsReplayApp() ? "TinecmaTool" : "TinecmaTool_app";
 
     FileIO::GetDefaultFiles(base, capture_filename, m_LoggingFilename, m_Target);
 
@@ -713,7 +713,7 @@ void RenderDoc::Initialise()
       "Unknown";
 #endif
 
-  RDCLOG("RenderDoc v%s %s %s %s (%s) %s", MAJOR_MINOR_VERSION_STRING, platform,
+  RDCLOG("TinecmaTool v%s %s %s %s (%s) %s", MAJOR_MINOR_VERSION_STRING, platform,
          sizeof(uintptr_t) == sizeof(uint64_t) ? "64-bit" : "32-bit",
          ENABLED(RDOC_RELEASE) ? "Release" : "Development", GitVersionHash,
          IsReplayApp() ? "loaded in replay application" : "capturing application");

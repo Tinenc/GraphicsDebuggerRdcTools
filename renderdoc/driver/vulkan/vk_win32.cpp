@@ -196,18 +196,36 @@ rdcstr GetJSONPath(bool wow6432)
     }
   }
 
-  if(wow6432)
-    jsonPath += "\\x86";
+  // The manifest is named after our layer identity rather than after the DLL, so it can never be
+  // an official "renderdoc.json". That lets a stock RenderDoc install keep its own manifest
+  // instead of the two builds evicting each other from the ImplicitLayers key.
+  const rdcstr jsonName = RENDERDOC_VULKAN_LAYER_JSON_BASENAME ".json";
 
-  jsonPath += "\\";
+  if(!wow6432)
+    return jsonPath + "\\" + jsonName;
 
-  rdcstr module_name;
-  FileIO::GetLibraryFilename(module_name);
-  jsonPath += strip_extension(get_basename(module_name));
+  // Upstream lays the 32-bit manifest out in an "x86" subdirectory beside the 64-bit one. This
+  // solution instead builds Win32 into a sibling "Win32\<Configuration>" directory, so fall back
+  // to that when the "x86" copy isn't there - otherwise we would register a path that doesn't
+  // exist, leaving 32-bit Vulkan capture silently broken.
+  const rdcstr x86Path = jsonPath + "\\x86\\" + jsonName;
 
-  jsonPath += ".json";
+  if(FileIO::exists(x86Path))
+    return x86Path;
 
-  return jsonPath;
+  const int32_t x64Component = jsonPath.find("\\x64\\");
+
+  if(x64Component >= 0)
+  {
+    rdcstr sibling = jsonPath;
+    sibling.replace((size_t)x64Component, 5, "\\Win32\\");
+    sibling += "\\" + jsonName;
+
+    if(FileIO::exists(sibling))
+      return sibling;
+  }
+
+  return x86Path;
 }
 
 static HKEY GetImplicitLayersKey(bool writeable, bool wow6432)

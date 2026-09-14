@@ -4312,7 +4312,7 @@ bool WrappedID3D11DeviceContext::Serialise_DrawAuto(SerialiserType &ser)
                                      MessageSource::IncorrectAPIUse,
                                      "Call to DrawAuto may be inaccurate if topology or vertex "
                                      "stride has changed between stream-out and draw.\n"
-                                     "Recapture with this version of RenderDoc to fix this "
+                                     "Recapture with this version of TinecmaTool to fix this "
                                      "problem, this capture was created with an older version.");
 
           if(m_CurrentPipelineState->IA.Topo == D3D11_PRIMITIVE_TOPOLOGY_POINTLIST)

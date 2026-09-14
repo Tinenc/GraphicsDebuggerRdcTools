@@ -185,7 +185,7 @@ struct CachedHookData
     // we also exclude some other overlay renderers here, such as steam's
     //
     // Also we exclude ourselves here - just in case the application has already loaded
-    // renderdoc.dll, or tries to load it.
+    // TinecmaTool.dll, or tries to load it.
     if(strstr(lowername, "fraps") || strstr(lowername, "gameoverlayrenderer") ||
        strstr(lowername, STRINGIZE(RDOC_BASE_NAME) ".dll") == lowername)
       return;

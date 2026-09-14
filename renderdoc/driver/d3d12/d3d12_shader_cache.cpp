@@ -443,7 +443,7 @@ rdcstr D3D12ShaderCache::GetShaderBlob(const char *source, const char *entry,
     if(dxc == NULL)
     {
       return "Couldn't locate dxcompiler.dll. Ensure you have a Windows 10 SDK installed or place "
-             "dxcompiler.dll in RenderDoc's plugins/d3d12 folder.";
+             "dxcompiler.dll in TinecmaTool's plugins/d3d12 folder.";
     }
     else
     {

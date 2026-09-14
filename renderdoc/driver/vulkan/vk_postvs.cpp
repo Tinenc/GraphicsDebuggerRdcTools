@@ -895,7 +895,7 @@ static void ConvertToMeshOutputCompute(const ShaderReflection &refl, const SPIRV
   rdcspv::Id wrapperEntry = editor.MakeId();
   // don't set a debug name, as some drivers get confused when this doesn't match the entry point
   // name :(.
-  // editor.SetName(wrapperEntry, "RenderDoc_MeshFetch_Wrapper_Entrypoint");
+  // editor.SetName(wrapperEntry, "TinecmaTool_MeshFetch_Wrapper_Entrypoint");
 
   // if we're not using all globals, this is only Input variables so only our invocation Id and any
   // builtins we kept

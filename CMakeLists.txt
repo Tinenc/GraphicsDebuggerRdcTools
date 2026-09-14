@@ -100,8 +100,8 @@ option(BUILD_VERSION_STABLE "If this is a stable build. See RENDERDOC_STABLE_BUI
 set(BUILD_VERSION_DIST_NAME "" CACHE STRING "The name of the distribution. See DISTRIBUTION_NAME in renderdoc/api/replay/version.h")
 set(BUILD_VERSION_DIST_VER "" CACHE STRING "The distribution-specific version number. See DISTRIBUTION_VERSION in renderdoc/api/replay/version.h")
 set(BUILD_VERSION_DIST_CONTACT "" CACHE STRING "The URL or email to contact with issues. See DISTRIBUTION_CONTACT in renderdoc/api/replay/version.h")
-set(RENDERDOC_PLUGINS_PATH "" CACHE STRING "Path to RenderDoc plugins folder after installation of RenderDoc (either absolute or relative to binary)")
-set(RENDERDOC_APK_PATH "" CACHE STRING "Path to RenderDoc .apk files after installation of RenderDoc on host (either absolute or relative to binary)")
+set(RENDERDOC_PLUGINS_PATH "" CACHE STRING "Path to TinecmaTool plugins folder after installation of TinecmaTool (either absolute or relative to binary)")
+set(RENDERDOC_APK_PATH "" CACHE STRING "Path to TinecmaTool .apk files after installation of TinecmaTool on host (either absolute or relative to binary)")
 
 set(LIB_SUFFIX "" CACHE STRING "Suffix for 'lib' folder in target directory structure. E.g. set to '64' to use /usr/local/lib64 instead of /usr/local/lib.")
 set(LIB_SUBFOLDER "" CACHE STRING "Subfolder under the 'lib' folder in target directory structure. E.g. set to 'renderdoc' to use /usr/local/lib/renderdoc instead of /usr/local/lib.")
@@ -109,7 +109,7 @@ set(VULKAN_JSON_SUFFIX "" CACHE STRING "Suffix for the vulkan implicit_layer jso
 
 option(INTERNAL_SELF_CAPTURE "Internal option: enable self-capture" OFF)
 
-set(RDOC_BASE_NAME "renderdoc")
+set(RDOC_BASE_NAME "TinecmaTool")
 if(INTERNAL_SELF_CAPTURE)
     set(RDOC_BASE_NAME "rdocself")
     add_definitions(-DRDOC_SELFCAPTURE_LIMITEDAPI=1)
@@ -147,12 +147,12 @@ if(NOT BUILD_VERSION_DIST_CONTACT STREQUAL "")
 endif()
 
 if(NOT RENDERDOC_PLUGINS_PATH STREQUAL "")
-    message(STATUS "Detected custom path to RenderDoc plugins: ${RENDERDOC_PLUGINS_PATH}")
+    message(STATUS "Detected custom path to TinecmaTool plugins: ${RENDERDOC_PLUGINS_PATH}")
     add_definitions(-DRENDERDOC_PLUGINS_PATH="${RENDERDOC_PLUGINS_PATH}")
 endif()
 
 if(NOT RENDERDOC_APK_PATH STREQUAL "")
-    message(STATUS "Detected custom path to RenderDocCmd.apk: ${RENDERDOC_APK_PATH}")
+    message(STATUS "Detected custom path to TinecmaToolCmd.apk: ${RENDERDOC_APK_PATH}")
     add_definitions(-DRENDERDOC_APK_PATH="${RENDERDOC_APK_PATH}")
 endif()
 
@@ -264,7 +264,7 @@ string(REGEX MATCH "[0-9]+" RENDERDOC_VERSION_MINOR "${MINOR_VERSION_LINE}")
 
 set(RENDERDOC_VERSION "${RENDERDOC_VERSION_MAJOR}.${RENDERDOC_VERSION_MINOR}")
 
-message(STATUS "Building RenderDoc version ${RENDERDOC_VERSION}")
+message(STATUS "Building TinecmaTool version ${RENDERDOC_VERSION}")
 
 if(RENDERDOC_VERSION_MAJOR STREQUAL "")
     message(FATAL_ERROR "Couldn't calculate major version")
@@ -354,7 +354,7 @@ if(cmake_build_type_lower STREQUAL "release" OR
    cmake_build_type_lower STREQUAL "relwithdebinfo" OR
    cmake_build_type_lower STREQUAL "minsizerel")
     add_definitions(-DRELEASE)
-    message(STATUS "Building RenderDoc in Release mode: ${CMAKE_BUILD_TYPE}")
+    message(STATUS "Building TinecmaTool in Release mode: ${CMAKE_BUILD_TYPE}")
     set(RELEASE_MODE 1)
 endif()
 

@@ -1399,7 +1399,7 @@ bool WrappedVulkan::Serialise_InitialState(SerialiserType &ser, ResourceId id, V
     {
       RDCWARN(
           "Skipping sparse initial states of buffer from old capture. "
-          "Please re-capture with this version of RenderDoc.");
+          "Please re-capture with this version of TinecmaTool.");
 
       // serialise without allocating, this makes for a skip
       VkSparseMemoryBind *binds = NULL;
@@ -1474,7 +1474,7 @@ bool WrappedVulkan::Serialise_InitialState(SerialiserType &ser, ResourceId id, V
         {
           RDCWARN(
               "Skipping sparse initial states of buffer from old capture. "
-              "Please re-capture with this version of RenderDoc.");
+              "Please re-capture with this version of TinecmaTool.");
 
           // serialise without allocating, this makes for a skip
           VkSparseMemoryBind *opaque = NULL;

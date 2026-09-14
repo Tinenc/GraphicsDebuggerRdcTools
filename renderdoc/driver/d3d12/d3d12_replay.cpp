@@ -4511,7 +4511,7 @@ RDResult D3D12_CreateReplayDevice(RDCFile *rdc, const ReplayOptions &opts, IRepl
       {
         RDCWARN(
             "Loaded d3d12.dll from 12on7 subfolder."
-            "Please use RenderDoc's plugins/d3d12/ subfolder instead");
+            "Please use TinecmaTool's plugins/d3d12/ subfolder instead");
       }
       else
       {
@@ -4567,7 +4567,7 @@ RDResult D3D12_CreateReplayDevice(RDCFile *rdc, const ReplayOptions &opts, IRepl
     {
       RETURN_ERROR_RESULT(ResultCode::APIIncompatibleVersion,
                           "D3D12 capture is incompatible version %llu, newest supported by this "
-                          "build of RenderDoc is %llu",
+                          "build of TinecmaTool is %llu",
                           ver, D3D12InitParams::CurrentVersion);
     }
 

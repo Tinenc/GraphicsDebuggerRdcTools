@@ -1250,10 +1250,10 @@ VkResult WrappedVulkan::vkGetPhysicalDeviceToolProperties(VkPhysicalDevice physi
 
   VkPhysicalDeviceToolProperties &props = *(pToolProperties + *pToolCount);
 
-  const rdcstr name = "RenderDoc"_lit;
+  const rdcstr name = "TinecmaTool"_lit;
   const rdcstr version = StringFormat::Fmt(
       "%s (%s)", FULL_VERSION_STRING, GitVersionHash[0] == 'N' ? "Unknown revision" : GitVersionHash);
-  const rdcstr description = "Debugging capture layer for RenderDoc"_lit;
+  const rdcstr description = "Debugging capture layer for TinecmaTool"_lit;
 
   RDCASSERTMSG("Name is too long for VkPhysicalDeviceToolProperties",
                name.length() < sizeof(props.name));

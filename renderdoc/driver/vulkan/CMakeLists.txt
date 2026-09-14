@@ -114,12 +114,18 @@ elseif(UNIX)
     
     add_definitions(-DVK_USE_PLATFORM_WIN32_KHR)
 
+    # Keep these in sync with RENDERDOC_VULKAN_LAYER_NAME / RENDERDOC_VULKAN_LAYER_VAR /
+    # RENDERDOC_VULKAN_LAYER_JSON_BASENAME in renderdoc/common/globalconfig.h. The layer identity
+    # is this fork's own so a machine that also has the official RenderDoc installed doesn't end up
+    # with two manifests competing for the same layer name / registry key.
+    set(RDOC_LAYER_JSON_BASENAME "TinecmaTool")
+
     set(VULKAN_LAYER_MODULE_PATH "${CMAKE_INSTALL_PREFIX}/lib${LIB_SUFFIX}/${LIB_SUBFOLDER_TRAIL_SLASH}lib${RDOC_BASE_NAME}.so")
-    set(VULKAN_ENABLE_VAR "ENABLE_VULKAN_${RDOC_BASE_NAME_UPPER}_CAPTURE")
-    set(VULKAN_LAYER_NAME "VK_LAYER_${RDOC_BASE_NAME_UPPER}_Capture")
+    set(VULKAN_ENABLE_VAR "ENABLE_VULKAN_TINECMATOOL_CAPTURE")
+    set(VULKAN_LAYER_NAME "VK_LAYER_TINECMATOOL_Capture")
 
     set(json_in ${CMAKE_CURRENT_SOURCE_DIR}/renderdoc.json)
-    set(json_out ${CMAKE_LIBRARY_OUTPUT_DIRECTORY}/${RDOC_BASE_NAME}_capture${VULKAN_JSON_SUFFIX}.json)
+    set(json_out ${CMAKE_LIBRARY_OUTPUT_DIRECTORY}/${RDOC_LAYER_JSON_BASENAME}_capture${VULKAN_JSON_SUFFIX}.json)
     
     configure_file(${json_in} ${json_out})
 

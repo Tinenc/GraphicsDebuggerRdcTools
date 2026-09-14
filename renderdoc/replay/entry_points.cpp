@@ -681,7 +681,7 @@ extern "C" RENDERDOC_API void RENDERDOC_CC RENDERDOC_UpdateInstalledVersionNumbe
         Publisher[0] = 0;
 
       // if this is our key, set the version number
-      if(!strcmp(DisplayName, "RenderDoc") && !strcmp(Publisher, "Baldur Karlsson"))
+      if(!strcmp(DisplayName, "TinecmaTool") && !strcmp(Publisher, "Baldur Karlsson"))
       {
         DWORD Version = (RENDERDOC_VERSION_MAJOR << 24) | (RENDERDOC_VERSION_MINOR << 16);
         DWORD VersionMajor = RENDERDOC_VERSION_MAJOR;

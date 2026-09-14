@@ -286,7 +286,7 @@ rdcstr GetReplayAppFilename()
 
   rdcstr path = StringFormat::Wide2UTF8(curFile);
   path = get_dirname(path);
-  rdcstr exe = path + "/qrenderdoc.exe";
+  rdcstr exe = path + "/qTinecmaTool.exe";
 
   FILE *f = FileIO::fopen(exe, FileIO::ReadBinary);
   if(f)
@@ -295,9 +295,9 @@ rdcstr GetReplayAppFilename()
     return exe;
   }
 
-  // if qrenderdoc.exe doesn't live in the same dir, we must be in x86/
+  // if qTinecmaTool.exe doesn't live in the same dir, we must be in x86/
   // so look one up the tree.
-  exe = path + "/../qrenderdoc.exe";
+  exe = path + "/../qTinecmaTool.exe";
 
   f = FileIO::fopen(exe, FileIO::ReadBinary);
   if(f)
@@ -313,7 +313,7 @@ rdcstr GetReplayAppFilename()
   DWORD type = 0;
   DWORD dataSize = sizeof(curFile);
   RDCEraseEl(curFile);
-  RegGetValueW(HKEY_CLASSES_ROOT, L"RenderDoc.RDCCapture.1\\DefaultIcon", NULL, RRF_RT_ANY, &type,
+  RegGetValueW(HKEY_CLASSES_ROOT, L"TinecmaTool.RDCCapture.1\\DefaultIcon", NULL, RRF_RT_ANY, &type,
                (void *)curFile, &dataSize);
 
   if(type == REG_EXPAND_SZ || type == REG_SZ)
@@ -355,7 +355,7 @@ void GetDefaultFiles(const rdcstr &logBaseName, rdcstr &capture_filename, rdcstr
 
   wchar_t *filename_start = temp_filename + wcslen(temp_filename);
 
-  wsprintf(filename_start, L"RenderDoc\\%ls_%04d.%02d.%02d_%02d.%02d.rdc", mod, 1900 + now.tm_year,
+  wsprintf(filename_start, L"TinecmaTool\\%ls_%04d.%02d.%02d_%02d.%02d.rdc", mod, 1900 + now.tm_year,
            now.tm_mon + 1, now.tm_mday, now.tm_hour, now.tm_min);
 
   capture_filename = StringFormat::Wide2UTF8(temp_filename);
@@ -364,7 +364,7 @@ void GetDefaultFiles(const rdcstr &logBaseName, rdcstr &capture_filename, rdcstr
 
   rdcwstr wbase = StringFormat::UTF82Wide(logBaseName);
 
-  wsprintf(filename_start, L"RenderDoc\\%ls_%04d.%02d.%02d_%02d.%02d.%02d.log", wbase.c_str(),
+  wsprintf(filename_start, L"TinecmaTool\\%ls_%04d.%02d.%02d_%02d.%02d.%02d.log", wbase.c_str(),
            1900 + now.tm_year, now.tm_mon + 1, now.tm_mday, now.tm_hour, now.tm_min, now.tm_sec);
 
   logging_filename = StringFormat::Wide2UTF8(temp_filename);
@@ -400,7 +400,7 @@ rdcstr GetAppFolderFilename(const rdcstr &filename)
   while(ret.back() == '/' || ret.back() == '\\')
     ret.pop_back();
 
-  ret += "\\renderdoc\\" + filename;
+  ret += "\\TinecmaTool\\" + filename;
 
   CreateParentDirectory(ret);
 

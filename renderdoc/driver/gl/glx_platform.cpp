@@ -427,7 +427,7 @@ class GLXPlatform : public GLPlatform
       XFree(fbcfg);
       RETURN_ERROR_RESULT(
           ResultCode::APIHardwareUnsupported,
-          "Couldn't create 3.2 context - RenderDoc requires OpenGL 3.2 availability");
+          "Couldn't create 3.2 context - TinecmaTool requires OpenGL 3.2 availability");
     }
 
     GLCoreVersion = major * 10 + minor;

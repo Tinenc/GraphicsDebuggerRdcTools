@@ -1500,7 +1500,7 @@ void PythonShell::helpSearch_keypress(QKeyEvent *e)
 
 QString PythonShell::scriptHeader()
 {
-  return tr(R"(RenderDoc Python console, powered by python %1.
+  return tr(R"(TinecmaTool Python console, powered by python %1.
 The 'pyrenderdoc' object is the current CaptureContext instance.
 The 'renderdoc' and 'qrenderdoc' modules are available.
 Documentation is available: https://renderdoc.org/docs/python_api/index.html)")

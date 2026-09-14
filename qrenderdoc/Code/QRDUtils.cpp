@@ -270,7 +270,7 @@ struct RichResourceText
         ShaderMessageLink link = v.value<ShaderMessageLink>();
 
         text +=
-            QApplication::translate("qrenderdoc", "%n msg(s)", "Shader messages", link.numMessages);
+            QApplication::translate("qTinecmaTool", "%n msg(s)", "Shader messages", link.numMessages);
       }
       else
       {
@@ -342,7 +342,7 @@ struct RichResourceText
         ShaderMessageLink link = v.value<ShaderMessageLink>();
 
         QString msgstr =
-            QApplication::translate("qrenderdoc", "%n msg(s)", "Shader messages", link.numMessages);
+            QApplication::translate("qTinecmaTool", "%n msg(s)", "Shader messages", link.numMessages);
 
         html += lit("<td valign=\"middle\" style=\"line-height: 14px\">"
                     "<img width=\"16\" src=':/text_add%3.png'></td>"
@@ -3406,7 +3406,7 @@ void UpdateTransferProgress(qint64 xfer, qint64 total, QElapsedTimer *timer,
                          .arg(minutesRemaining, 2, 10, QLatin1Char('0'))
                          .arg(secondsRemaining, 2, 10, QLatin1Char('0'));
     else
-      remainString = QApplication::translate("qrenderdoc", "%1 seconds").arg(secondsRemaining);
+      remainString = QApplication::translate("qTinecmaTool", "%1 seconds").arg(secondsRemaining);
 
     double speed = speedMBS;
 
@@ -3418,7 +3418,7 @@ void UpdateTransferProgress(qint64 xfer, qint64 total, QElapsedTimer *timer,
     }
 
     progressLabel->setText(
-        QApplication::translate("qrenderdoc", "%1\n%2 MB / %3 MB. %4 remaining (%5 %6)")
+        QApplication::translate("qTinecmaTool", "%1\n%2 MB / %3 MB. %4 remaining (%5 %6)")
             .arg(progressText)
             .arg(xferMB, 0, 'f', 2)
             .arg(totalMB, 0, 'f', 2)

@@ -203,7 +203,7 @@ private:
     }
     else
     {
-      RDCERR("Didn't pass RenderDoc-wrapped device to nvapi function");
+      RDCERR("Didn't pass TinecmaTool-wrapped device to nvapi function");
       return NVAPI_INVALID_POINTER;
     }
   }
@@ -234,13 +234,13 @@ private:
       }
       else
       {
-        RDCERR("Couldn't retrieve ID3D12Device from RenderDoc-wrapped device");
+        RDCERR("Couldn't retrieve ID3D12Device from TinecmaTool-wrapped device");
         return NVAPI_INVALID_POINTER;
       }
     }
     else
     {
-      RDCERR("Didn't pass RenderDoc-wrapped device to nvapi function");
+      RDCERR("Didn't pass TinecmaTool-wrapped device to nvapi function");
       return NVAPI_INVALID_POINTER;
     }
   }
@@ -262,7 +262,7 @@ private:
     }
     else
     {
-      RDCERR("Didn't pass RenderDoc-wrapped device to nvapi function");
+      RDCERR("Didn't pass TinecmaTool-wrapped device to nvapi function");
       return NVAPI_INVALID_POINTER;
     }
   }
@@ -285,7 +285,7 @@ private:
     }
     else
     {
-      RDCERR("Didn't pass RenderDoc-wrapped device to nvapi function");
+      RDCERR("Didn't pass TinecmaTool-wrapped device to nvapi function");
       return NVAPI_INVALID_POINTER;
     }
   }
@@ -309,7 +309,7 @@ private:
     }
     else
     {
-      RDCERR("Didn't pass RenderDoc-wrapped device to nvapi function");
+      RDCERR("Didn't pass TinecmaTool-wrapped device to nvapi function");
       return NVAPI_INVALID_POINTER;
     }
   }
@@ -332,7 +332,7 @@ private:
     }
     else
     {
-      RDCERR("Didn't pass RenderDoc-wrapped device to nvapi function");
+      RDCERR("Didn't pass TinecmaTool-wrapped device to nvapi function");
       return NVAPI_INVALID_POINTER;
     }
   }
@@ -410,13 +410,13 @@ private:
       }
       else
       {
-        RDCERR("Couldn't retrieve ID3D12Device from RenderDoc-wrapped device");
+        RDCERR("Couldn't retrieve ID3D12Device from TinecmaTool-wrapped device");
         return NVAPI_INVALID_POINTER;
       }
     }
     else
     {
-      RDCERR("Didn't pass RenderDoc-wrapped device to nvapi function");
+      RDCERR("Didn't pass TinecmaTool-wrapped device to nvapi function");
       return NVAPI_INVALID_POINTER;
     }
   }
@@ -494,13 +494,13 @@ private:
       }
       else
       {
-        RDCERR("Couldn't retrieve ID3D12Device from RenderDoc-wrapped device");
+        RDCERR("Couldn't retrieve ID3D12Device from TinecmaTool-wrapped device");
         return NVAPI_INVALID_POINTER;
       }
     }
     else
     {
-      RDCERR("Didn't pass RenderDoc-wrapped device to nvapi function");
+      RDCERR("Didn't pass TinecmaTool-wrapped device to nvapi function");
       return NVAPI_INVALID_POINTER;
     }
   }

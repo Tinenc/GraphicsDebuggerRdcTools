@@ -1085,7 +1085,7 @@ bool WrappedID3D12Device::Serialise_CreateDescriptorHeap(
       else
       {
         RDCERR(
-            "RenderDoc needs extra descriptors for patching during analysis,"
+            "TinecmaTool needs extra descriptors for patching during analysis,"
             "but heap is already at binding tier limit");
       }
     }
@@ -1096,7 +1096,7 @@ bool WrappedID3D12Device::Serialise_CreateDescriptorHeap(
     if(patched && FAILED(hr))
     {
       RDCWARN(
-          "RenderDoc needs extra descriptors for patching during analysis,"
+          "TinecmaTool needs extra descriptors for patching during analysis,"
           "but heap failed to expand any further even at tier 3");
       PatchedDesc.NumDescriptors = Descriptor.NumDescriptors;
 

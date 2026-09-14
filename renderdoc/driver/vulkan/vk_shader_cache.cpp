@@ -292,7 +292,7 @@ VulkanShaderCache::VulkanShaderCache(WrappedVulkan *driver)
 
     for(const VkPhysicalDeviceToolProperties &t : tools)
     {
-      if(rdcstr(t.name) == "RenderDoc")
+      if(rdcstr(t.name) == "TinecmaTool")
       {
         RDCLOG("Enabling debug info for self-captured shaders");
         compileSettings.debugInfo = true;

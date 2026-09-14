@@ -141,19 +141,41 @@
 enum
 {
   RenderDoc_FirstTargetControlPort = 38920,
-  RenderDoc_LastTargetControlPort = RenderDoc_FirstTargetControlPort + 7,
+
+  // 64 slots instead of the upstream 8. Global hooking a parent/child process tree (e.g. an
+  // emulator launched with hookIntoChildren) burns through one target control port per hooked
+  // process, and once the pool is exhausted every further injection fails with "Couldn't open
+  // socket for target control" and the UI never gets a handshake.
+  RenderDoc_LastTargetControlPort = RenderDoc_FirstTargetControlPort + 63,
+
   RenderDoc_RemoteServerPort = 39920,
 
-  RenderDoc_ForwardPortBase = 38950,
+  // kept clear of the target control range above (38920..38983) so an adb forward can't collide
+  // with a reserved target control port on the host
+  RenderDoc_ForwardPortBase = 38990,
   RenderDoc_ForwardTargetControlOffset = 0,
   RenderDoc_ForwardRemoteServerOffset = 9,
   RenderDoc_ForwardPortStride = 10,
 };
 
-#define RENDERDOC_VULKAN_LAYER_NAME "VK_LAYER_RENDERDOC_Capture"
-#define RENDERDOC_VULKAN_LAYER_VAR "ENABLE_VULKAN_RENDERDOC_CAPTURE"
+// The Vulkan layer identity of this build is deliberately NOT the upstream
+// "VK_LAYER_RENDERDOC_Capture"/"ENABLE_VULKAN_RENDERDOC_CAPTURE". The official RenderDoc install
+// ships a manifest declaring exactly that name, and the Vulkan loader keeps only ONE manifest per
+// layer name - so two installs fight over it and whichever manifest is enumerated first wins.
+// On top of that, upstream's InstallVulkanLayer() deletes every other "<basename>.json" registry
+// entry, so the official install and this one silently evict each other from
+// HKLM\SOFTWARE\Khronos\Vulkan\ImplicitLayers. Giving this build its own layer name, enable
+// environment variable and manifest basename keeps both installs registered and independent.
+#define RENDERDOC_VULKAN_LAYER_NAME "VK_LAYER_TINECMATOOL_Capture"
+#define RENDERDOC_VULKAN_LAYER_VAR "ENABLE_VULKAN_TINECMATOOL_CAPTURE"
 
-#define RENDERDOC_ANDROID_LIBRARY "libVkLayer_GLES_RenderDoc.so"
+// Basename (without directory or extension) of the implicit-layer manifest this build writes out
+// and registers. RDOC_BASE_NAME is already this fork's own name (TinecmaTool), so this exists only
+// to keep the manifest name decoupled from it: the manifest must never be an official
+// "renderdoc.json", which would collide with a stock RenderDoc install.
+#define RENDERDOC_VULKAN_LAYER_JSON_BASENAME "TinecmaTool"
+
+#define RENDERDOC_ANDROID_LIBRARY "libVkLayer_GLES_TinecmaTool.so"
 
 // This MUST match the package name in the build process that generates per-architecture packages
 #define RENDERDOC_ANDROID_PACKAGE_BASE "org.renderdoc.renderdoccmd"

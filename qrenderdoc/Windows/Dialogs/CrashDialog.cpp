@@ -145,18 +145,18 @@ CrashDialog::CrashDialog(PersistantConfig &cfg, QVariantMap crashReportJSON, QWi
   else if(replayCrash)
   {
     text =
-        tr("<p>RenderDoc encountered a serious problem. Please take a moment to look over this "
-           "form to check what has been gathered then send it off so that RenderDoc can get "
+        tr("<p>TinecmaTool encountered a serious problem. Please take a moment to look over this "
+           "form to check what has been gathered then send it off so that TinecmaTool can get "
            "better!</p>");
   }
   else
   {
     text =
-        tr("<p>A crash happened while RenderDoc was injected into your application. It's not "
-           "feasible to tell whether the crash was in your application or in RenderDoc's capturing "
+        tr("<p>A crash happened while TinecmaTool was injected into your application. It's not "
+           "feasible to tell whether the crash was in your application or in TinecmaTool's capturing "
            "code. The minidump <a href=\"%1\">in the zip</a> might show the problem.</p>"
            "<p>If you don't think your application crashed on its own please take a moment to "
-           "look over this form to check what has been gathered then send it off so that RenderDoc "
+           "look over this form to check what has been gathered then send it off so that TinecmaTool "
            "can get better!</p>")
             .arg(QUrl::fromLocalFile(m_ReportPath).toString());
   }
@@ -169,7 +169,7 @@ CrashDialog::CrashDialog(PersistantConfig &cfg, QVariantMap crashReportJSON, QWi
   if(m_Config.CheckUpdate_UpdateAvailable)
   {
     text +=
-        tr("<p><b><a href=\"https://renderdoc.org/builds\">An updated version of RenderDoc</a> is "
+        tr("<p><b><a href=\"https://renderdoc.org/builds\">An updated version of TinecmaTool</a> is "
            "available</b>. This bug may be fixed in a newer version, it's advised that you "
            "update to see if the bug is fixed.</p>");
   }
@@ -193,7 +193,7 @@ CrashDialog::CrashDialog(PersistantConfig &cfg, QVariantMap crashReportJSON, QWi
     ui->email->setEnabled(false);
 
     text = tr(
-        "<p>RenderDoc encountered a serious problem. "
+        "<p>TinecmaTool encountered a serious problem. "
         "Unfortunately something went wrong while initialising the bug reporter as Qt was unable "
         "to load SSL support at runtime.</p>");
 
@@ -207,9 +207,9 @@ CrashDialog::CrashDialog(PersistantConfig &cfg, QVariantMap crashReportJSON, QWi
 #if defined(Q_OS_WIN32)
 #if QT_POINTER_SIZE == 8
     text +=
-        tr("you have libcrypto-1_1-64.dll and libssl-1_1-64.dll available next to qrenderdoc.exe.");
+        tr("you have libcrypto-1_1-64.dll and libssl-1_1-64.dll available next to qTinecmaTool.exe.");
 #else
-    text += tr("you have libcrypto-1_1.dll and libssl-1_1.dll available next to qrenderdoc.exe.");
+    text += tr("you have libcrypto-1_1.dll and libssl-1_1.dll available next to qTinecmaTool.exe.");
 #endif
 #else
     text += tr("you have the runtime libopenssl library >= 1.1.1 available in your system.");
@@ -218,7 +218,7 @@ CrashDialog::CrashDialog(PersistantConfig &cfg, QVariantMap crashReportJSON, QWi
 #else
 
 #if defined(Q_OS_WIN32)
-    text += tr("you have libeay32.dll and ssleay32.dll available next to qrenderdoc.exe.");
+    text += tr("you have libeay32.dll and ssleay32.dll available next to qTinecmaTool.exe.");
 #else
     text += tr("you have the runtime libopenssl library >= 1.0.0 available in your system.");
 #endif
@@ -324,10 +324,10 @@ void CrashDialog::on_send_clicked()
     QMessageBox::StandardButton result =
         RDDialog::question(this, tr("Are you sure?"),
                            tr("Uploading your capture file will send it privately to the "
-                              "RenderDoc server where I can "
+                              "TinecmaTool server where I can "
                               "use it to reproduce your problem.\n\nAre you sure you are "
                               "OK with sending the capture "
-                              "securely to RenderDoc's website?"));
+                              "securely to TinecmaTool's website?"));
 
     if(result != QMessageBox::Yes)
     {

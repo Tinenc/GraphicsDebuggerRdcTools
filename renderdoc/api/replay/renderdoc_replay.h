@@ -47,9 +47,9 @@
 
 // this #define can be used to mark a program as a 'replay' program which should not be captured.
 // Any program used for such purpose must define and export this symbol in the main exe or one dll
-// that will be loaded before renderdoc.dll is loaded.
+// that will be loaded before TinecmaTool.dll is loaded.
 #define REPLAY_PROGRAM_MARKER()                                                 \
-  extern "C" RENDERDOC_EXPORT_API void RENDERDOC_CC renderdoc__replay__marker() \
+  extern "C" RENDERDOC_EXPORT_API void RENDERDOC_CC TinecmaTool__replay__marker() \
   {                                                                             \
   }
 // declare ResourceId extremely early so that it can be referenced in structured_data.h
@@ -1131,7 +1131,7 @@ protected:
 
 DECLARE_REFLECTION_STRUCT(IReplayController);
 
-DOCUMENT(R"(A connection to a running application with RenderDoc injected, which allows limited
+DOCUMENT(R"(A connection to a running application with TinecmaTool injected, which allows limited
 control over the capture process as well as querying the current status.
 )");
 struct ITargetControl
@@ -1409,7 +1409,7 @@ protected:
   ~ICaptureAccess() = default;
 };
 
-DOCUMENT(R"(A connection to a running remote RenderDoc server on another machine. This allows the
+DOCUMENT(R"(A connection to a running remote TinecmaTool server on another machine. This allows the
 transfer of captures to and from the local machine, as well as remotely replaying a capture with a
 local proxy renderer, so that captures that are not supported locally can still be debugged with as
 much work as possible happening on the local machine.
@@ -2125,7 +2125,7 @@ extern "C" RENDERDOC_API ExecuteResult RENDERDOC_CC
 RENDERDOC_InjectIntoProcess(uint32_t pid, const rdcarray<EnvironmentModification> &env,
                             const rdcstr &capturefile, const CaptureOptions &opts, bool waitForExit);
 
-DOCUMENT(R"(When debugging RenderDoc it can be useful to capture itself by doing a side-build with a
+DOCUMENT(R"(When debugging TinecmaTool it can be useful to capture itself by doing a side-build with a
 temporary name. This function checks to see if a given self-hosted DLL is available.
 
 :param str dllname: The name of the self-hosted capture module.
@@ -2134,14 +2134,14 @@ temporary name. This function checks to see if a given self-hosted DLL is availa
 )");
 extern "C" RENDERDOC_API bool RENDERDOC_CC RENDERDOC_CanSelfHostedCapture(const rdcstr &dllname);
 
-DOCUMENT(R"(When debugging RenderDoc it can be useful to capture itself by doing a side-build with a
+DOCUMENT(R"(When debugging TinecmaTool it can be useful to capture itself by doing a side-build with a
 temporary name. This function wraps up the use of the in-application API to start a capture.
 
 :param str dllname: The name of the self-hosted capture module.
 )");
 extern "C" RENDERDOC_API void RENDERDOC_CC RENDERDOC_StartSelfHostCapture(const rdcstr &dllname);
 
-DOCUMENT(R"(When debugging RenderDoc it can be useful to capture itself by doing a side-build with a
+DOCUMENT(R"(When debugging TinecmaTool it can be useful to capture itself by doing a side-build with a
 temporary name. This function wraps up the use of the in-application API to end a capture.
 
 :param str dllname: The name of the self-hosted capture module.
@@ -2190,7 +2190,7 @@ DOCUMENT("INTERNAL: Update installed version number in windows registry.");
 extern "C" RENDERDOC_API void RENDERDOC_CC RENDERDOC_UpdateInstalledVersionNumber();
 #endif
 
-DOCUMENT(R"(Initialises RenderDoc for replay. Replay API functions should not be called before this
+DOCUMENT(R"(Initialises TinecmaTool for replay. Replay API functions should not be called before this
 has been called. It should be called exactly once, and before shutdown you must call
 :func:`ShutdownReplay`.
 
@@ -2200,7 +2200,7 @@ has been called. It should be called exactly once, and before shutdown you must 
 extern "C" RENDERDOC_API void RENDERDOC_CC RENDERDOC_InitialiseReplay(GlobalEnvironment globalEnv,
                                                                       const rdcarray<rdcstr> &args);
 
-DOCUMENT(R"(Shutdown RenderDoc for replay. Replay API functions should not be called after this
+DOCUMENT(R"(Shutdown TinecmaTool for replay. Replay API functions should not be called after this
 has been called. It is not safe to re-initialise replay after this function has been called so it
 should only be called at program shutdown. This function must only be called if
 :func:`InitialiseReplay` was previously called.
@@ -2241,7 +2241,7 @@ extern "C" RENDERDOC_API void RENDERDOC_CC RENDERDOC_GetLogFileContents(uint64_t
                                                                         rdcstr &logfile);
 #endif
 
-DOCUMENT(R"(Add a message to RenderDoc's logfile.
+DOCUMENT(R"(Add a message to TinecmaTool's logfile.
 
 :param LogType type: The type of the log message. Error messages will trigger a debugger breakpoint
   if a debugger is attached, and fatal errors will kill the process after logging.
@@ -2263,7 +2263,7 @@ This will be in the form "MAJOR.MINOR"
 )");
 extern "C" RENDERDOC_API const char *RENDERDOC_CC RENDERDOC_GetVersionString();
 
-DOCUMENT(R"(Determines if this is a release build of RenderDoc or not.
+DOCUMENT(R"(Determines if this is a release build of TinecmaTool or not.
 
 :return: ``True`` if the replay is running on a release build.
 :rtype: bool
@@ -2387,7 +2387,7 @@ user can be prompted to close an existing program before a new one is launched.
 )");
   virtual bool SupportsMultiplePrograms(const rdcstr &URL) = 0;
 
-  DOCUMENT(R"(Query if the device supports RenderDoc capture and replay.
+  DOCUMENT(R"(Query if the device supports TinecmaTool capture and replay.
 
 :param str URL: The URL of the device in the form ``protocol://host``, with protocol as returned by
   :func:`GetProtocolName` and host as returned by :func:`GetDevices`.

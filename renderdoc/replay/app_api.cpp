@@ -444,7 +444,7 @@ extern "C" RENDERDOC_API int RENDERDOC_CC RENDERDOC_GetAPI(RENDERDOC_Version ver
 
   if(ret)
   {
-    RDCLOG("Initialising RenderDoc API version %d.%d.%d for requested version %d", major, minor,
+    RDCLOG("Initialising TinecmaTool API version %d.%d.%d for requested version %d", major, minor,
            patch, version);
     return 1;
   }
