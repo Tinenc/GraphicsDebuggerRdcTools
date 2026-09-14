@@ -187,6 +187,80 @@ report('lowercase ui needle', 'contains("qtinecmatool.exe")', want=2)
 report('PascalCase needle must NOT be here', 'app.contains("TinecmaToolcmd.exe")', want=0)
 report('PascalCase needle must NOT be here', 'app.contains("qTinecmaTool.exe")', want=0)
 
+head('PAIR 10  project-file references resolve on disk')
+print('  the rename sweep rewrites <ProjectName> AND the file it is built from, so a')
+print('  swept Include= that names a file nobody renamed is a hard C1083 build break.')
+INC = re.compile(r'<(?:ClCompile|ClInclude|None|ResourceCompile|QtMoc|QtTranslation)'
+                 r'\s+Include="([^"]+)"')
+dangling = []
+branded_dangling = []
+checked = 0
+for d in SCAN_DIRS:
+    for dp, dns, fns in os.walk(os.path.join(ROOT, d)):
+        dns[:] = [x for x in dns if x not in EXCLUDE_DIRS]
+        for fn in fns:
+            if not fn.endswith(('.vcxproj', '.filters', '.pri', '.pro')):
+                continue
+            p = os.path.join(dp, fn)
+            text = load(p)
+            for m in INC.finditer(text):
+                item = m.group(1).replace('\\', '/')
+                if item.startswith('..') or '$(' in item or '%' in item:
+                    continue
+                # submodules that are simply not checked out on this machine
+                if item.startswith(('official/', '3rdparty/')):
+                    continue
+                target = os.path.normpath(os.path.join(dp, item.replace('/', os.sep)))
+                checked += 1
+                if not os.path.exists(target):
+                    pair = (rel(p), item)
+                    dangling.append(pair)
+                    if re.search(r'tinecmatool', item, re.I):
+                        branded_dangling.append(pair)
+print('  [%s] %-44s %d references checked, %d dangling'
+      % ('OK' if not branded_dangling else 'FAIL', 'Include= targets exist',
+         checked, len(dangling)))
+for r, item in dangling[:8]:
+    print('        %s -> %s' % (r, item))
+if len(dangling) > 8:
+    print('        ... %d more' % (len(dangling) - 8))
+for r, item in branded_dangling:
+    FAILED.append('dangling branded Include=: %s -> %s' % (r, item))
+
+head('PAIR 11  producer/consumer of the swapped *file names*')
+print('  renaming a project renames the file it BUILDS; every consumer of that')
+print('  file name has to move with it, or the build links a lib nobody produces')
+print('  and the diagnostic tools look in a folder nothing writes to.')
+qpro = TEXT[os.path.normpath(os.path.join(ROOT, 'qrenderdoc', 'qrenderdoc.pro'))]
+for tok, want in (('TinecmaTool.lib', 1), ('DESTDIR/renderdoc.lib', 0)):
+    got = qpro.count(tok)
+    good = got == want
+    if not good:
+        FAILED.append('qrenderdoc.pro %s = %d (want %d)' % (tok, got, want))
+    print('  [%s] %-56s %d (want %d)' % ('OK' if good else 'FAIL', tok, got, want))
+print('  (the qmake path is not built here, but the import lib name is a pair)')
+
+STUB = os.path.join(ROOT, 'qrenderdoc', 'TinecmaToolui_stub.cpp')
+OLD_STUB = os.path.join(ROOT, 'qrenderdoc', 'renderdocui_stub.cpp')
+good = os.path.isfile(STUB) and not os.path.exists(OLD_STUB)
+if not good:
+    FAILED.append('stub source was not renamed to TinecmaToolui_stub.cpp')
+print('  [%s] %-56s new=%s old-gone=%s'
+      % ('OK' if good else 'FAIL', 'stub source file renamed',
+         os.path.isfile(STUB), not os.path.exists(OLD_STUB)))
+
+v = os.path.join(ROOT, 'verify_mumu_gles_capture.py')
+vt = load(v) if os.path.isfile(v) else ''
+for tok, want in (('"TinecmaTool_2*.log"', 1), ('"RenderDoc_2*.log"', 0),
+                  ('"TinecmaTool")', 1),
+                  ('TinecmaTool.dll is not the one being injected', 1),
+                  ('renderdoc.dll is not the one being injected', 0)):
+    got = vt.count(tok)
+    good = got == want
+    if not good:
+        FAILED.append('verify_mumu_gles_capture.py %s = %d (want %d)' % (tok, got, want))
+    print('  [%s] %-56s %d (want %d)' % ('OK' if good else 'FAIL', tok, got, want))
+
 print('\n' + '=' * 78)
 if FAILED:
     print('RESULT: %d INCONSISTENC(Y|IES)' % len(FAILED))

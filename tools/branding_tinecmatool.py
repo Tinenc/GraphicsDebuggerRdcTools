@@ -49,6 +49,8 @@ SCAN_ROOT_FILES = [
     "CMakeLists.txt",
     "build_and_deploy.cmd",
     "fix_vulkan_layer_registration.py",
+    # reads the capture log the renamed DLL writes, so its paths are part of the pair
+    "verify_mumu_gles_capture.py",
 ]
 
 # Never descend into these directory names (matched anywhere below SCAN_DIRS).
@@ -63,7 +65,10 @@ PROTECT = [
     # (substring of repo-relative path, reason)
     ("renderdoc/api/app/renderdoc_app.h", "C API surface - RENDERDOC_GetAPI must not move"),
     ("qrenderdoc/Code/pyrenderdoc",       "python module names must not move"),
-    ("qrenderdoc/qrenderdoc.pro",         "qmake project for the python/linux path"),
+    # NOTE: qrenderdoc/qrenderdoc.pro is NOT here.  Its include paths spell real
+    # directory names (../renderdoc/api/replay) so the blanket rules must not run
+    # on it -- that is handled by NAME_RULE_EXCLUDE -- but its link line names the
+    # import library that renderdoc.vcxproj produces, which IS part of the pair.
     ("renderdoc/rdocself.version",        "self-capture build uses RDOC_BASE_NAME=rdocself"),
     # this script's whole job is to DELETE stale layer entries and to preserve the
     # OFFICIAL RenderDoc install -- the paths it compares against must keep saying
@@ -232,6 +237,22 @@ EXTRA_FILE_RULES = {
     "qrenderdoc/Windows/Dialogs/CaptureDialog.cpp": [
         ("renderdoccmd ", "TinecmaToolcmd ", "linux elevation dialog text"),
     ],
+
+    # ---- qmake project: the link line is the CONSUMER of our import library ---
+    # Only this one needle: everything else in the file is a real directory name.
+    "qrenderdoc/qrenderdoc.pro": [
+        ("LIBS += $$DESTDIR/renderdoc.lib", "LIBS += $$DESTDIR/TinecmaTool.lib",
+         "import lib of the renamed DLL"),
+    ],
+
+    # ---- MuMu capture verdict tool: it reads back what the DLL wrote ---------
+    # LOGDIR / the log glob / the "wrong dll" hint all have to follow the renamed
+    # module, otherwise the tool silently reports "no session logs found".
+    "verify_mumu_gles_capture.py": [
+        ('os.path.expanduser("~")), "RenderDoc")',
+         'os.path.expanduser("~")), "TinecmaTool")', "per-user temp folder"),
+        ('"RenderDoc_2*.log"', '"TinecmaTool_2*.log"', "session log glob"),
+    ],
 }
 
 # Files to rename on disk: (old, new)
@@ -286,6 +307,10 @@ NAME_RULE_EXCLUDE = {
     # about. So it has to keep spelling the old names. A clean --check is only
     # meaningful if that is accounted for here rather than "fixed".
     "build_and_deploy.cmd": "deliberately names stale pre-rebrand binaries",
+    # ../renderdoc/api/replay is a REAL directory. A blanket rule rewrites it into
+    # a path that does not exist, so only the targeted rule below may touch this
+    # file. It is also not built on Windows (that path is qrenderdoc_local.vcxproj).
+    "qrenderdoc/qrenderdoc.pro": "qmake project - its paths name real directories",
 }
 
 

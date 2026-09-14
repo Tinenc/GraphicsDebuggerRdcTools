@@ -99,7 +99,7 @@ win32 {
 	LIBS += user32.lib
 
 	# Link against the core library
-	LIBS += $$DESTDIR/renderdoc.lib
+	LIBS += $$DESTDIR/TinecmaTool.lib
 
 	# Link against the version library
 	LIBS += $$DESTDIR/version.lib
