@@ -307,15 +307,36 @@ inline void sc_push64(rdcarray<uint8_t> &sc, uint64_t v)
   sc_push32(sc, (uint32_t)(v >> 32));
 }
 
-// Build shellcode for a "call (paramReg)=arg, then ret to origRip" trampoline.
-// If doneFlagAddr != 0, the shellcode also stores 1 to that byte just before
-// returning (used by InjectFunctionCall_ThreadHijack to signal completion).
+// Build shellcode for a "call func(arg), then ret to origRip" trampoline.
+//
+// The victim thread is stopped at an arbitrary instruction, so its RSP parity is
+// unknown. A Windows x64 callee requires RSP%16 == 8 on entry and faults on any
+// aligned SSE spill if that is violated -- and whether it is violated depends on
+// where the thread happened to be suspended, which is why forgetting this shows
+// up as "the target dies about half the time". Pushing an even number of
+// registers preserves whatever parity we inherited, so the trampoline forces it
+// instead: it stashes the victim's RSP in `savedRspSlot`, rounds RSP down to a
+// 16-byte boundary and reserves shadow space, making the call ABI-correct
+// regardless of where the thread was stopped.
+//
+// Nothing is allocated inside the target for this -- the call just uses normal
+// free stack below the victim's frame, which keeps the remote-memory footprint
+// (and so the thing an anti-cheat can enumerate) down to the two pages the
+// injector already needed.
+//
+// `doneFlagAddr` is written 1 immediately after the call returns; the injector
+// polls it and must not touch the shellcode page until it has seen the flag.
 #if defined(_M_X64) || defined(__x86_64__)
 static rdcarray<uint8_t> BuildHijackShellcode(uintptr_t arg, uintptr_t funcAddr,
-                                           uintptr_t doneFlagAddr, uintptr_t origRip)
+                                              uintptr_t doneFlagAddr, uintptr_t savedRspSlot,
+                                              uintptr_t origRip, bool calleePopsArg)
 {
+  // Windows x64 has a single calling convention: the caller owns the shadow
+  // space and cleans nothing, so calleePopsArg is an x86-only concern.
+  (void)calleePopsArg;
+
   rdcarray<uint8_t> sc;
-  sc.reserve(96);
+  sc.reserve(144);
 
   sc_push8(sc, 0x9C);    // pushfq
   sc_push8(sc, 0x50);    // push rax
@@ -330,11 +351,29 @@ static rdcarray<uint8_t> BuildHijackShellcode(uintptr_t arg, uintptr_t funcAddr,
   sc_push8(sc, 0x41);
   sc_push8(sc, 0x53);    // push r11
 
-  // sub rsp, 0x28      ; shadow space (32 bytes) + keep 16-byte alignment after the 7x push above
+  // mov rax, <savedRspSlot> ; mov [rax], rsp   -- park the victim stack pointer
+  sc_push8(sc, 0x48);
+  sc_push8(sc, 0xB8);
+  sc_push64(sc, (uint64_t)savedRspSlot);
+  sc_push8(sc, 0x48);
+  sc_push8(sc, 0x89);
+  sc_push8(sc, 0x20);
+
+  // and rsp, -16   -- drop to a 16-byte boundary, whatever parity we inherited.
+  //                   Rounding only ever moves RSP down, so the saved block at
+  //                   the old RSP stays above the new one and the call frame is
+  //                   built below it without overlapping.
+  sc_push8(sc, 0x48);
+  sc_push8(sc, 0x83);
+  sc_push8(sc, 0xE4);
+  sc_push8(sc, 0xF0);
+
+  // sub rsp, 0x20   -- shadow space; rsp stays 16-byte aligned, so the callee
+  //                    sees rsp%16 == 8 on entry as the ABI requires
   sc_push8(sc, 0x48);
   sc_push8(sc, 0x83);
   sc_push8(sc, 0xEC);
-  sc_push8(sc, 0x28);
+  sc_push8(sc, 0x20);
 
   // mov rcx, <arg>
   sc_push8(sc, 0x48);
@@ -350,22 +389,21 @@ static rdcarray<uint8_t> BuildHijackShellcode(uintptr_t arg, uintptr_t funcAddr,
   sc_push8(sc, 0xFF);
   sc_push8(sc, 0xD0);
 
-  // add rsp, 0x28
+  // mov rax, doneFlagAddr ; mov byte [rax], 1
   sc_push8(sc, 0x48);
-  sc_push8(sc, 0x83);
-  sc_push8(sc, 0xC4);
-  sc_push8(sc, 0x28);
+  sc_push8(sc, 0xB8);
+  sc_push64(sc, (uint64_t)doneFlagAddr);
+  sc_push8(sc, 0xC6);
+  sc_push8(sc, 0x00);
+  sc_push8(sc, 0x01);
 
-  if(doneFlagAddr)
-  {
-    // mov rax, doneFlagAddr ; mov byte [rax], 1
-    sc_push8(sc, 0x48);
-    sc_push8(sc, 0xB8);
-    sc_push64(sc, (uint64_t)doneFlagAddr);
-    sc_push8(sc, 0xC6);
-    sc_push8(sc, 0x00);
-    sc_push8(sc, 0x01);
-  }
+  // mov rax, <savedRspSlot> ; mov rsp, [rax]   -- back onto the victim stack
+  sc_push8(sc, 0x48);
+  sc_push8(sc, 0xB8);
+  sc_push64(sc, (uint64_t)savedRspSlot);
+  sc_push8(sc, 0x48);
+  sc_push8(sc, 0x8B);
+  sc_push8(sc, 0x20);
 
   sc_push8(sc, 0x41);
   sc_push8(sc, 0x5B);    // pop r11
@@ -396,10 +434,16 @@ static rdcarray<uint8_t> BuildHijackShellcode(uintptr_t arg, uintptr_t funcAddr,
 }
 #else
 static rdcarray<uint8_t> BuildHijackShellcode(uintptr_t arg, uintptr_t funcAddr,
-                                           uintptr_t doneFlagAddr, uintptr_t origEip)
+                                              uintptr_t doneFlagAddr, uintptr_t savedRspSlot,
+                                              uintptr_t origEip, bool calleePopsArg)
 {
+  // The x86 side keeps using the victim's stack too: 4-byte alignment is what
+  // __cdecl/__stdcall actually require there, and pushad already lands on it.
+  // savedRspSlot is accepted for signature parity.
+  (void)savedRspSlot;
+
   rdcarray<uint8_t> sc;
-  sc.reserve(48);
+  sc.reserve(64);
 
   sc_push8(sc, 0x9C);    // pushfd
   sc_push8(sc, 0x60);    // pushad
@@ -409,9 +453,21 @@ static rdcarray<uint8_t> BuildHijackShellcode(uintptr_t arg, uintptr_t funcAddr,
   // mov eax, funcAddr
   sc_push8(sc, 0xB8);
   sc_push32(sc, (uint32_t)funcAddr);
-  // call eax  ; stdcall, callee cleans up the single push above
+  // call eax
   sc_push8(sc, 0xFF);
   sc_push8(sc, 0xD0);
+
+  // LoadLibraryW is __stdcall and pops the argument itself; the INTERNAL_*
+  // exports are __cdecl and leave it for us. Getting this wrong walks the
+  // victim's stack by 4 bytes on every injection, so it is passed in rather
+  // than assumed.
+  if(!calleePopsArg)
+  {
+    // add esp, 4
+    sc_push8(sc, 0x83);
+    sc_push8(sc, 0xC4);
+    sc_push8(sc, 0x04);
+  }
 
   if(doneFlagAddr)
   {
@@ -482,13 +538,22 @@ static bool RemoteReadByte(HANDLE hProcess, void *addr, uint8_t &out)
   return ReadProcessMemory(hProcess, addr, &out, 1, &n) && n == 1;
 }
 
+// Remote memory layout for one hijack: ctrl[0..7] holds the victim thread's RSP
+// while the trampoline runs, ctrl[8] is the done flag.
+//
+// The trampoline signals within microseconds of the callee returning, so poll
+// tightly for the first stretch rather than sleeping in kHijackPollMs steps --
+// on a CREATE_SUSPENDED target the victim resumes at its entry point the moment
+// the trampoline returns.
+static const DWORD kHijackFastPollMs = 200;    // ms of ~1ms-granularity polling
+
 // Core thread-hijack routine. funcAddr is invoked with a single pointer arg
 // (matches the ABI of both LoadLibraryW and INTERNAL_* exports in this fork).
 // If `dataOut`/`dataLen` is provided the data is read back from `argRemote`
 // after completion.
 static bool ThreadHijackInvoke(HANDLE hProcess, DWORD pid, uintptr_t funcAddr,
                                void *argRemote, void *dataOut, size_t dataLen,
-                               const char *debugTag)
+                               bool calleePopsArg, const char *debugTag)
 {
   if(!pid)
     pid = GetProcessId(hProcess);
@@ -531,26 +596,32 @@ static bool ThreadHijackInvoke(HANDLE hProcess, DWORD pid, uintptr_t funcAddr,
   origRip = (uintptr_t)ctx.Eip;
 #endif
 
-  // Allocate a done-flag byte iff caller wants completion notification.
-  void *doneFlag = NULL;
-  if(dataOut)
+  // The done flag is mandatory, not an optimisation. Without it the only way to
+  // learn that the trampoline finished is to guess a sleep duration, and the
+  // trampoline cannot be freed while the victim thread is still standing on it:
+  // the thread returns from LoadLibraryW *into* the shellcode page, so freeing
+  // it early reliably kills the target process.
+  // ctrl[0..7] receives the victim's RSP for the duration of the call; ctrl[8]
+  // is the flag.
+  void *ctrl = VirtualAllocEx(hProcess, NULL, 16, MEM_COMMIT | MEM_RESERVE, PAGE_READWRITE);
+  if(!ctrl)
   {
-    doneFlag = VirtualAllocEx(hProcess, NULL, 16, MEM_COMMIT | MEM_RESERVE, PAGE_READWRITE);
-    if(!doneFlag)
-    {
-      RDCERR("ThreadHijackInvoke(%s): VirtualAllocEx(doneFlag) failed (err %u)", debugTag,
-             GetLastError());
-      ResumeThread(hThread);
-      CloseHandle(hThread);
-      return false;
-    }
-    uint8_t zero = 0;
-    SIZE_T n = 0;
-    WriteProcessMemory(hProcess, doneFlag, &zero, 1, &n);
+    RDCERR("ThreadHijackInvoke(%s): VirtualAllocEx(ctrl) failed (err %u)", debugTag, GetLastError());
+    ResumeThread(hThread);
+    CloseHandle(hThread);
+    return false;
   }
 
+  uint8_t zeroes[16] = {0};
+  SIZE_T n = 0;
+  WriteProcessMemory(hProcess, ctrl, zeroes, sizeof(zeroes), &n);
+
+  void *savedRspSlot = ctrl;
+  void *doneFlag = (uint8_t *)ctrl + 8;
+
   rdcarray<uint8_t> shellcode =
-      BuildHijackShellcode((uintptr_t)argRemote, funcAddr, (uintptr_t)doneFlag, origRip);
+      BuildHijackShellcode((uintptr_t)argRemote, funcAddr, (uintptr_t)doneFlag,
+                           (uintptr_t)savedRspSlot, origRip, calleePopsArg);
 
   void *remoteCode = VirtualAllocEx(hProcess, NULL, shellcode.size(), MEM_COMMIT | MEM_RESERVE,
                                     PAGE_EXECUTE_READWRITE);
@@ -558,8 +629,7 @@ static bool ThreadHijackInvoke(HANDLE hProcess, DWORD pid, uintptr_t funcAddr,
   {
     RDCERR("ThreadHijackInvoke(%s): VirtualAllocEx(shellcode) failed (err %u)", debugTag,
            GetLastError());
-    if(doneFlag)
-      VirtualFreeEx(hProcess, doneFlag, 0, MEM_RELEASE);
+    VirtualFreeEx(hProcess, ctrl, 0, MEM_RELEASE);
     ResumeThread(hThread);
     CloseHandle(hThread);
     return false;
@@ -572,8 +642,7 @@ static bool ThreadHijackInvoke(HANDLE hProcess, DWORD pid, uintptr_t funcAddr,
     RDCERR("ThreadHijackInvoke(%s): WriteProcessMemory(shellcode) failed (err %u)", debugTag,
            GetLastError());
     VirtualFreeEx(hProcess, remoteCode, 0, MEM_RELEASE);
-    if(doneFlag)
-      VirtualFreeEx(hProcess, doneFlag, 0, MEM_RELEASE);
+    VirtualFreeEx(hProcess, ctrl, 0, MEM_RELEASE);
     ResumeThread(hThread);
     CloseHandle(hThread);
     return false;
@@ -585,59 +654,109 @@ static bool ThreadHijackInvoke(HANDLE hProcess, DWORD pid, uintptr_t funcAddr,
   ctx.Eip = (DWORD)(uintptr_t)remoteCode;
 #endif
 
+  // Write back the control half only. The full snapshot read above is what gives
+  // us Rip/Rsp, but pushing the floating-point half back is needless risk: the
+  // OS keeps that state lazily, so a stale copy is worse than no copy.
+  ctx.ContextFlags = CONTEXT_CONTROL;
+
   if(!SetThreadContext(hThread, &ctx))
   {
     RDCERR("ThreadHijackInvoke(%s): SetThreadContext failed (err %u)", debugTag, GetLastError());
     VirtualFreeEx(hProcess, remoteCode, 0, MEM_RELEASE);
-    if(doneFlag)
-      VirtualFreeEx(hProcess, doneFlag, 0, MEM_RELEASE);
+    VirtualFreeEx(hProcess, ctrl, 0, MEM_RELEASE);
     ResumeThread(hThread);
     CloseHandle(hThread);
     return false;
   }
 
-  // Resume to whatever suspend count we found + 1 (we added one with our SuspendThread).
+  // Suspend count is now prevSusp + 1. Drop it to zero so the trampoline runs;
+  // the original count is put back below, which keeps a CREATE_SUSPENDED target
+  // suspended across the whole injection sequence exactly like the
+  // CreateRemoteThread path does.
   for(DWORD i = 0; i <= prevSusp; i++)
     ResumeThread(hThread);
 
-  bool ok = true;
-
-  if(doneFlag)
+  // Poll the done-flag byte (1-byte stores are atomic on x86/x64). Poll tightly
+  // for the first stretch: for a CREATE_SUSPENDED target the victim thread
+  // resumes at its entry point as soon as the trampoline returns, so every ms
+  // we spend before noticing the flag is a ms the target spends running
+  // un-instrumented.
+  bool ok = false;
+  DWORD waited = 0;
+  DWORD readFailures = 0;
+  for(;;)
   {
-    // Poll the done-flag byte (1-byte stores are atomic on x86/x64).
-    ok = false;
-    for(DWORD waited = 0; waited < kHijackTimeoutMs; waited += kHijackPollMs)
+    uint8_t b = 0;
+    if(RemoteReadByte(hProcess, doneFlag, b))
     {
-      uint8_t b = 0;
-      if(RemoteReadByte(hProcess, doneFlag, b) && b)
+      readFailures = 0;
+      if(b)
       {
         ok = true;
         break;
       }
-      Sleep(kHijackPollMs);
     }
-
-    if(!ok)
-      RDCERR("ThreadHijackInvoke(%s): timed out waiting for done-flag", debugTag);
-
-    if(ok && dataOut && dataLen)
+    else
     {
-      SIZE_T n = 0;
-      ReadProcessMemory(hProcess, argRemote, dataOut, dataLen, &n);
+      // The flag lives in a page we committed, so a read failure means the
+      // target is gone rather than that we raced the writer. Bail out now
+      // instead of sitting here for the full timeout.
+      readFailures++;
+      if(readFailures > 50)
+      {
+        RDCERR("ThreadHijackInvoke(%s): done-flag unreadable, target process is gone", debugTag);
+        break;
+      }
     }
-  }
-  else
-  {
-    // No done-flag: at least give the shellcode a few ms to execute before
-    // freeing the remote code page. Callers (e.g. InjectDLL) verify success
-    // out-of-band via FindRemoteDLL.
-    Sleep(50);
+
+    if(waited >= kHijackTimeoutMs)
+      break;
+
+    DWORD step = (waited < kHijackFastPollMs) ? 1 : kHijackPollMs;
+    Sleep(step);
+    waited += step;
   }
 
-  VirtualFreeEx(hProcess, remoteCode, 0, MEM_RELEASE);
-  if(doneFlag)
-    VirtualFreeEx(hProcess, doneFlag, 0, MEM_RELEASE);
+  if(!ok)
+  {
+    // Distinguish "the trampoline never ran" from "the trampoline killed it" --
+    // those have completely different fixes and used to look identical here.
+    DWORD exitCode = 0;
+    bool alive = GetExitCodeProcess(hProcess, &exitCode) && exitCode == STILL_ACTIVE;
+    RDCERR("ThreadHijackInvoke(%s): timed out waiting for done-flag after %u ms "
+           "(target %s, exit code 0x%08x)",
+           debugTag, waited, alive ? "still running" : "has exited", exitCode);
+  }
+
+  if(ok && dataOut && dataLen)
+  {
+    SIZE_T rd = 0;
+    ReadProcessMemory(hProcess, argRemote, dataOut, dataLen, &rd);
+  }
+
+  if(ok)
+  {
+    // Put the suspend count back the way we found it. Only safe once the flag is
+    // set, i.e. once the victim thread has left the trampoline.
+    for(DWORD i = 0; i < prevSusp; i++)
+      SuspendThread(hThread);
+  }
+
   CloseHandle(hThread);
+
+  // Deliberately NOT freed: remoteCode and ctrl are left behind.
+  //
+  // The trampoline signals the done flag a handful of instructions before it
+  // returns to the original RIP, so there is always a window where the victim
+  // thread is still standing on remoteCode holding a return address into it. A
+  // VirtualFreeEx in that window unmaps a page the thread is about to jump to
+  // and takes the whole target process down with it. There is no way to close
+  // that window from out here, so the safe choice is to leak. It costs about
+  // 130 bytes per injection inside a target that we only ever instrument for the
+  // lifetime of one capture, which is nothing next to killing it.
+  (void)remoteCode;
+  (void)ctrl;
+
   return ok;
 }
 
@@ -675,8 +794,8 @@ static bool InjectDLL_ThreadHijack(HANDLE hProcess, DWORD pid, rdcwstr libName)
     return false;
   }
 
-  // No done-flag: InjectDLL's success is verified externally via FindRemoteDLL.
-  bool ok = ThreadHijackInvoke(hProcess, pid, loadLib, remoteDllPath, NULL, 0, "LoadLibraryW");
+  // LoadLibraryW is __stdcall, so on x86 it pops its own argument.
+  bool ok = ThreadHijackInvoke(hProcess, pid, loadLib, remoteDllPath, NULL, 0, true, "LoadLibraryW");
 
   VirtualFreeEx(hProcess, remoteDllPath, 0, MEM_RELEASE);
   return ok;
@@ -709,7 +828,10 @@ static bool InjectFunctionCall_ThreadHijack(HANDLE hProcess, DWORD pid, uintptr_
     return false;
   }
 
-  bool ok = ThreadHijackInvoke(hProcess, pid, funcAddr, remoteData, data, dataLen, debugTag);
+  // INTERNAL_* are declared __cdecl, so on x86 the caller still owns the
+  // argument slot after the call returns.
+  bool ok =
+      ThreadHijackInvoke(hProcess, pid, funcAddr, remoteData, data, dataLen, false, debugTag);
 
   VirtualFreeEx(hProcess, remoteData, 0, MEM_RELEASE);
   return ok;
@@ -717,13 +839,41 @@ static bool InjectFunctionCall_ThreadHijack(HANDLE hProcess, DWORD pid, uintptr_
 
 }    // anonymous namespace
 
+// defined below InjectDLL, which now verifies the load itself
+uintptr_t FindRemoteDLL(DWORD pid, rdcstr libName);
+
 void InjectDLL(HANDLE hProcess, rdcwstr libName)
 {
 #if TINECMATOOL_USE_THREADHIJACK_INJECT
-  if(InjectDLL_ThreadHijack(hProcess, GetProcessId(hProcess), libName))
-    return;
-  RDCWARN("Thread-hijack DLL inject failed; falling back to CreateRemoteThread for '%ls'",
-          libName.c_str());
+  {
+    DWORD pid = GetProcessId(hProcess);
+
+    // The trampoline completing only means LoadLibraryW *returned*. It could
+    // have returned NULL (bad path, loader refusal, DllMain failure), so the
+    // module list is the real success signal -- the same one the caller checks
+    // afterwards, just checked here while we still have a fallback available.
+    if(InjectDLL_ThreadHijack(hProcess, pid, libName))
+    {
+      for(int attempt = 0; attempt < 40; attempt++)
+      {
+        if(FindRemoteDLL(pid, STRINGIZE(RDOC_BASE_NAME) ".dll") != 0)
+          return;
+
+        // A short grace period covers the case where LoadLibraryW is still
+        // finishing up inside the target; after that we stop believing it.
+        Sleep(25);
+      }
+
+      RDCWARN("Thread-hijack reported success but '%ls' is not in the module list of PID %u; "
+              "falling back to CreateRemoteThread",
+              libName.c_str(), pid);
+    }
+    else
+    {
+      RDCWARN("Thread-hijack DLL inject failed; falling back to CreateRemoteThread for '%ls'",
+              libName.c_str());
+    }
+  }
 #endif
 
   wchar_t dllPath[MAX_PATH + 1] = {0};
